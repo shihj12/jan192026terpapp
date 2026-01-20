@@ -1613,11 +1613,16 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   
   # --- Enter editor helper (ensures input exists before updateTextInput) ---
   enter_editor <- function(flow, mode = c("new", "edit", "duplicate"), loaded_file = NULL) {
+    message("[enter_editor] START mode=", mode)
+    t0 <- Sys.time()
     mode <- match.arg(mode)
 
     # RULE: Force peptide_analysis to be first step if present
+    message("[enter_editor] enforcing peptide_analysis first...")
     flow <- tf_enforce_peptide_analysis_first(flow)
+    message("[enter_editor] peptide_analysis enforced in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
 
+    message("[enter_editor] setting reactiveVals...")
     flow_rv(flow)
     built_rv(NULL)
     tf_clear_open()
@@ -1626,24 +1631,32 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
 
     load_mode_rv(mode)
     loaded_file_rv(loaded_file)
+    message("[enter_editor] setting ui_mode_rv to editor...")
     ui_mode_rv("editor")
+    message("[enter_editor] ui_mode_rv set in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
 
     nm <- flow$pipeline_name %||% ""
     session$onFlushed(function() {
+      message("[enter_editor] onFlushed callback executing")
       updateTextInput(session, "pipeline_name", value = nm)
     }, once = TRUE)
+    message("[enter_editor] DONE total: ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   }
   
   # -----------------------------
   # Root UI (Home vs Editor)
   # -----------------------------
   output$tf_root_ui <- renderUI({
+    message("[tf_root_ui] renderUI triggered")
+    t0 <- Sys.time()
     mode <- ui_mode_rv()
-    
+    message("[tf_root_ui] mode=", mode)
+
     if (!identical(mode, "editor")) {
       pick <- load_mode_rv()
       show_file <- is.character(pick) && length(pick) == 1 && pick %in% c("edit", "duplicate")
-      
+
+      message("[tf_root_ui] returning home UI")
       return(
         div(
           class = "tf-home",
@@ -1654,7 +1667,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
               actionButton("tf_home_new", "Create new pipeline", class = "btn btn-primary"),
               actionButton("tf_home_edit", "Edit current pipeline", class = "btn btn-default"),
               actionButton("tf_home_dup", "Duplicate current pipeline and edit", class = "btn btn-default"),
-              
+
               if (show_file) div(
                 class = "tf-home-file",
                 fileInput("tf_load_terpflow", label = NULL, accept = c(".terpflow")),
@@ -1665,8 +1678,9 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         )
       )
     }
-    
-    div(
+
+    message("[tf_root_ui] building editor UI...")
+    ui <- div(
       div(
         class = "tf-topbar",
         div(class = "tf-topbar-title", "Terpflow"),
@@ -1680,18 +1694,20 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
           textInput("tf_step_search", label = NULL, placeholder = "Search steps"),
           actionButton("add_step", "Add new step", class = "btn btn-primary"),
           tags$div(style = "height: 8px;"),
-          
+
           actionButton("tf_build", "Build .terpflow", class = "btn btn-primary"),
           tags$div(style = "height: 8px;"),
-          
+
           div(class = "tf-status", uiOutput("tf_status_line")),
           tags$div(style = "height: 8px;"),
-          
+
           uiOutput("tf_download_ui")
         ),
         div(class = "tf-canvas", uiOutput("pipeline_canvas_steps"))
       )
     )
+    message("[tf_root_ui] editor UI built in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
+    ui
   })
   
   
@@ -2457,8 +2473,11 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   # Render canvas steps (parent + paired card)
   # -----------------------------
   output$pipeline_canvas_steps <- renderUI({
+    message("[pipeline_canvas_steps] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
     steps <- flow$steps %||% list()
+    message("[pipeline_canvas_steps] rendering ", length(steps), " steps")
     search_term <- tolower(trimws(input$tf_step_search %||% ""))
     if (nzchar(search_term)) {
       step_label <- function(step) {
@@ -2596,12 +2615,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       }
     }
     
+    message("[pipeline_canvas_steps] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
     tagList(
       out,
       tags$script(HTML("if(window.TerpFlow && TerpFlow.bindDetails) TerpFlow.bindDetails();"))
     )
   })
-  
+
   # -----------------------------
   # DP nested UI outputs
   # -----------------------------
