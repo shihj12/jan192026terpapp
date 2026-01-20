@@ -1124,6 +1124,16 @@ msterp_theme_head <- function() {
         font-size: 12px;
         color: #444;
       }
+
+      /* Tools page action buttons - constrained width */
+      .btn-tool-action {
+        width: auto !important;
+        max-width: 160px;
+        display: inline-block;
+      }
+      .panel-left .btn-tool-action {
+        margin-bottom: 8px;
+      }
     ")),
     tags$script(HTML("
       // Keep sidebar toggle button label in sync with collapsed state

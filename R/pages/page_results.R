@@ -8558,351 +8558,349 @@ page_results_server <- function(input, output, session) {
         res_pretty_label(lbl, engine_id = parent_row$engine_id[1])
       }
 
-      # --- Part 1: Volcano marker sets ---
-      volcano_idx <- which(tolower(df$engine_id) == "volcano" & df$kind == "step")
-
-      for (vi in volcano_idx) {
-        v_dir <- df$node_dir[vi]
-        v_label <- df$label[vi] %||% df$step_label[vi] %||% "Volcano"
-        v_label <- res_pretty_label(v_label, engine_id = "volcano")
-        res <- tb_load_results(v_dir)
-
-        if (is.null(res) || is.null(res$data)) next
-
-        comparisons <- res$data$comparisons %||% list()
-
-        for (comp_name in names(comparisons)) {
-          comp <- comparisons[[comp_name]]
-          sets <- comp$sets %||% list()
-
-          sig_up <- sets$sig_up %||% character(0)
-          sig_down <- sets$sig_down %||% character(0)
-
-          points <- comp$points
-          if (!is.null(points) && nrow(points) > 0) {
-            up_data <- points[points$protein_id %in% sig_up, , drop = FALSE]
-            down_data <- points[points$protein_id %in% sig_down, , drop = FALSE]
-
-            if (nrow(up_data) > 0) up_data$direction <- "up"
-            if (nrow(down_data) > 0) down_data$direction <- "down"
-
-            marker_data <- rbind(up_data, down_data)
-
-            if (nrow(marker_data) > 0) {
-              # Add source context columns
-              marker_data$source_analysis <- v_label
-              marker_data$comparison <- comp_name
-
-              sheet_name <- make_sheet_name(paste0(v_label, " ", comp_name))
-              openxlsx::addWorksheet(wb, sheet_name)
-              openxlsx::writeData(wb, sheet_name, marker_data)
-            }
-          }
-        }
-      }
-
-      # --- Part 2: GO enrichment results (goora, 1dgofcs, 2dgofcs) ---
       go_engines <- c("goora", "1dgofcs", "2dgofcs")
-      go_idx <- which(tolower(df$engine_id) %in% go_engines)
-
-      for (gi in go_idx) {
-        g_dir <- df$node_dir[gi]
-        g_label <- df$label[gi] %||% df$step_label[gi] %||% df$engine_id[gi]
-        g_label <- res_pretty_label(g_label, engine_id = df$engine_id[gi])
-        g_engine <- tolower(df$engine_id[gi])
-
-        # Get parent context
-        parent_id <- df$parent_id[gi]
-        parent_label <- get_parent_label(parent_id)
-
-        # For paired GO analyses under volcano, try to get comparison and config context
-        pairing_context <- ""
-        config_name <- ""
-        if (!is.null(parent_id) && !is.na(parent_id)) {
-          parent_row <- df[df$node_id == parent_id, , drop = FALSE]
-          if (nrow(parent_row) > 0 && tolower(parent_row$engine_id[1]) == "volcano") {
-            # The label often contains the direction (up/down)
-            if (grepl("up", g_label, ignore.case = TRUE)) {
-              pairing_context <- "upregulated"
-            } else if (grepl("down", g_label, ignore.case = TRUE)) {
-              pairing_context <- "downregulated"
-            }
-            # Extract config name from node_id pattern: cfg_N__comparison_direction
-            # or from the beginning of the label before the comparison
-            node_id_parts <- strsplit(basename(df$node_id[gi]), "__")[[1]]
-            if (length(node_id_parts) >= 2) {
-              config_name <- node_id_parts[1]  # e.g., "cfg_1"
-            }
-          }
-        }
-
-        res <- tb_load_results(g_dir)
-        if (is.null(res) || is.null(res$data)) next
-
-        # Get terms data
-        terms <- res$data$terms %||% NULL
-        if (is.null(terms) || !is.data.frame(terms) || nrow(terms) == 0) next
-
-        # Add source context columns to terms
-        terms$source_analysis <- g_label
-        terms$parent_analysis <- parent_label
-        if (nzchar(pairing_context)) {
-          terms$direction_context <- pairing_context
-        }
-        if (nzchar(config_name)) {
-          terms$config_id <- config_name
-        }
-        terms$engine_type <- g_engine
-
-        # BP/MF/CC share a page - all terms from this GO analysis go on one sheet
-        sheet_name <- make_sheet_name(paste0(parent_label, " ", g_label))
-        openxlsx::addWorksheet(wb, sheet_name)
-        openxlsx::writeData(wb, sheet_name, terms)
-      }
-
-      # --- Part 3: Heatmap gene lists (heatmap, ftest_heatmap) ---
       heatmap_engines <- c("heatmap", "ftest_heatmap")
-      heatmap_idx <- which(tolower(df$engine_id) %in% heatmap_engines)
-
-      for (hi in heatmap_idx) {
-        h_dir <- df$node_dir[hi]
-        h_label <- df$label[hi] %||% df$step_label[hi] %||% df$engine_id[hi]
-        h_label <- res_pretty_label(h_label, engine_id = df$engine_id[hi])
-        h_engine <- tolower(df$engine_id[hi])
-
-        res <- tb_load_results(h_dir)
-        if (is.null(res) || is.null(res$data)) next
-
-        # Get gene list from heatmap results
-        # heatmap uses matched_genes, ftest_heatmap uses gene_order
-        gene_list <- res$data$matched_genes %||% res$data$gene_order %||% character(0)
-        if (length(gene_list) == 0) next
-
-        # Build marker data frame with z-scores and abundance values
-        marker_data <- data.frame(
-          gene = gene_list,
-          source_analysis = h_label,
-          engine_type = h_engine,
-          stringsAsFactors = FALSE
-        )
-
-        # Add z-score and abundance data per sample if available
-        mat_zscore <- res$data$mat_zscore
-        mat_log <- res$data$mat_log
-        sample_order <- res$data$sample_order %||% character(0)
-        group_annotations <- res$data$group_annotations
-
-        # Add mean z-score per gene (row mean of z-scores)
-        if (!is.null(mat_zscore) && is.matrix(mat_zscore) && nrow(mat_zscore) > 0) {
-          gene_idx <- match(gene_list, rownames(mat_zscore))
-          valid_idx <- !is.na(gene_idx)
-          marker_data$mean_zscore <- NA_real_
-          if (any(valid_idx)) {
-            marker_data$mean_zscore[valid_idx] <- rowMeans(mat_zscore[gene_idx[valid_idx], , drop = FALSE], na.rm = TRUE)
-          }
-
-          # Add per-sample z-scores as columns (prefixed with "zscore_")
-          if (length(sample_order) > 0 && ncol(mat_zscore) == length(sample_order)) {
-            for (si in seq_along(sample_order)) {
-              col_name <- paste0("zscore_", sample_order[si])
-              marker_data[[col_name]] <- NA_real_
-              if (any(valid_idx)) {
-                marker_data[[col_name]][valid_idx] <- mat_zscore[gene_idx[valid_idx], si]
-              }
-            }
-          }
-        }
-
-        # Add mean abundance per gene (row mean of log-transformed values)
-        if (!is.null(mat_log) && is.matrix(mat_log) && nrow(mat_log) > 0) {
-          gene_idx <- match(gene_list, rownames(mat_log))
-          valid_idx <- !is.na(gene_idx)
-          marker_data$mean_abundance <- NA_real_
-          if (any(valid_idx)) {
-            marker_data$mean_abundance[valid_idx] <- rowMeans(mat_log[gene_idx[valid_idx], , drop = FALSE], na.rm = TRUE)
-          }
-
-          # Add per-sample abundance as columns (prefixed with "abundance_")
-          if (length(sample_order) > 0 && ncol(mat_log) == length(sample_order)) {
-            for (si in seq_along(sample_order)) {
-              col_name <- paste0("abundance_", sample_order[si])
-              marker_data[[col_name]] <- NA_real_
-              if (any(valid_idx)) {
-                marker_data[[col_name]][valid_idx] <- mat_log[gene_idx[valid_idx], si]
-              }
-            }
-          }
-        }
-
-        # For ftest_heatmap, include stats if available
-        if (identical(h_engine, "ftest_heatmap") && !is.null(res$data$stats_table)) {
-          stats <- res$data$stats_table
-          if (is.data.frame(stats) && nrow(stats) > 0 && "gene" %in% names(stats)) {
-            # Merge stats with marker data (pval, padj, sig_label)
-            marker_data <- merge(marker_data, stats, by = "gene", all.x = TRUE)
-          }
-        }
-
-        sheet_name <- make_sheet_name(h_label)
-        openxlsx::addWorksheet(wb, sheet_name)
-        openxlsx::writeData(wb, sheet_name, marker_data)
-      }
-
-      # --- Part 4: Overlap unique proteins per group ---
       overlap_engines <- c("idquant_overlap_detected", "idquant_overlap_quantified")
-      overlap_idx <- which(tolower(df$engine_id) %in% overlap_engines)
 
-      for (oi in overlap_idx) {
-        o_dir <- df$node_dir[oi]
-        o_label <- df$label[oi] %||% df$step_label[oi] %||% df$engine_id[oi]
-        o_label <- res_pretty_label(o_label, engine_id = df$engine_id[oi])
-        o_engine <- tolower(df$engine_id[oi])
+      for (i in seq_len(nrow(df))) {
+        eng <- tolower(df$engine_id[i] %||% "")
+        kind <- as.character(df$kind[i] %||% "")
 
-        res <- tb_load_results(o_dir)
-        if (is.null(res) || is.null(res$data)) next
+        # --- Volcano marker sets ---
+        if (identical(eng, "volcano") && identical(kind, "step")) {
+          v_dir <- df$node_dir[i]
+          v_label <- df$label[i] %||% df$step_label[i] %||% "Volcano"
+          v_label <- res_pretty_label(v_label, engine_id = "volcano")
+          res <- tb_load_results(v_dir)
 
-        mat <- res$data$intensity_mat
-        smeta <- res$data$sample_meta
-        ids_df <- res$data$ids
+          if (is.null(res) || is.null(res$data)) next
 
-        if (is.null(mat) || !is.matrix(mat) || is.null(smeta) || !is.data.frame(smeta)) next
+          comparisons <- res$data$comparisons %||% list()
 
-        # Get protein IDs from matrix rownames (same logic as tb_render_idquant_cv)
-        protein_id <- rownames(mat)
-        rownames_were_null <- is.null(protein_id)
-        if (rownames_were_null) {
-          protein_id <- paste0("protein_", seq_len(nrow(mat)))
-        } else {
-          # Only replace empty/missing protein IDs with placeholders, not all of them
-          empty_idx <- which(!nzchar(protein_id) | is.na(protein_id))
-          if (length(empty_idx) > 0) {
-            protein_id[empty_idx] <- paste0("protein_", empty_idx)
-          }
-        }
+          for (comp_name in names(comparisons)) {
+            comp <- comparisons[[comp_name]]
+            sets <- comp$sets %||% list()
 
-        # Build gene symbol mapping using same logic as CV Scatter (tb_render_idquant_cv)
-        label_id <- protein_id
-        if (!is.null(ids_df) && is.data.frame(ids_df) && nrow(ids_df) > 0) {
-          # Find primary ID column (protein ID) - same candidates as CV Scatter
-          primary_candidates <- c("protein_id", "proteinid", "uniprot", "uniprot_id", "accession",
-                                  "pg.proteingroups", "proteingroups")
-          primary_col <- NULL
-          for (cand in primary_candidates) {
-            if (cand %in% tolower(names(ids_df))) {
-              primary_col <- names(ids_df)[tolower(names(ids_df)) == cand][1]
-              break
-            }
-          }
-          # Fallback to first column
-          if (is.null(primary_col)) primary_col <- names(ids_df)[1]
+            sig_up <- sets$sig_up %||% character(0)
+            sig_down <- sets$sig_down %||% character(0)
 
-          # Find gene symbol column - same candidates as CV Scatter
-          cand_gene_cols <- c("gene_symbol", "gene", "symbol", "geneid", "gene_id", "gene_name",
-                              "pg.genes", "genes")
-          gene_col <- NULL
-          for (cand in cand_gene_cols) {
-            matches <- names(ids_df)[tolower(names(ids_df)) == cand]
-            if (length(matches) > 0) {
-              gene_col <- matches[1]
-              break
-            }
-          }
-          if (is.null(gene_col)) {
-            # Fallback: look for columns containing "gene" or "symbol" (case-insensitive)
-            gene_matches <- names(ids_df)[grepl("gene|symbol", names(ids_df), ignore.case = TRUE)]
-            gene_col <- setdiff(gene_matches, primary_col)
-            gene_col <- gene_col[1] %||% NULL
-          }
+            points <- comp$points
+            if (!is.null(points) && nrow(points) > 0) {
+              up_data <- points[points$protein_id %in% sig_up, , drop = FALSE]
+              down_data <- points[points$protein_id %in% sig_down, , drop = FALSE]
 
-          # If rownames were NULL/missing and row counts match, use direct 1:1 mapping first.
-          # This handles cases where the matrix doesn't have rownames but ids table has the data.
-          use_direct_mapping <- rownames_were_null && nrow(ids_df) == length(protein_id)
+              if (nrow(up_data) > 0) up_data$direction <- "up"
+              if (nrow(down_data) > 0) down_data$direction <- "down"
 
-          if (use_direct_mapping && !is.null(gene_col) && gene_col %in% names(ids_df)) {
-            # Direct 1:1 correspondence: row i of matrix corresponds to row i of ids
-            cand <- as.character(ids_df[[gene_col]])
-            ok <- !is.na(cand) & nzchar(cand)
-            label_id[ok] <- cand[ok]
-            # Also update protein_id from ids table for better display
-            if (!is.null(primary_col) && primary_col %in% names(ids_df)) {
-              prot_cand <- as.character(ids_df[[primary_col]])
-              prot_ok <- !is.na(prot_cand) & nzchar(prot_cand)
-              protein_id[prot_ok] <- prot_cand[prot_ok]
-            }
-          } else if (!is.null(gene_col) && gene_col %in% names(ids_df) &&
-                     !is.null(primary_col) && primary_col %in% names(ids_df)) {
-            # Build lookup map: primary_id -> gene_symbol
-            map <- stats::setNames(as.character(ids_df[[gene_col]]), as.character(ids_df[[primary_col]]))
-            mapped <- unname(map[protein_id])
-            ok <- !is.na(mapped) & nzchar(mapped)
-            label_id[ok] <- mapped[ok]
-          } else if (nrow(ids_df) == length(protein_id)) {
-            # Fallback: if row counts match, assume 1:1 correspondence
-            if (!is.null(gene_col) && gene_col %in% names(ids_df)) {
-              cand <- as.character(ids_df[[gene_col]])
-              ok <- !is.na(cand) & nzchar(cand)
-              label_id[ok] <- cand[ok]
+              marker_data <- rbind(up_data, down_data)
+
+              if (nrow(marker_data) > 0) {
+                # Add source context columns
+                marker_data$source_analysis <- v_label
+                marker_data$comparison <- comp_name
+
+                sheet_name <- make_sheet_name(paste0(v_label, " ", comp_name))
+                openxlsx::addWorksheet(wb, sheet_name)
+                openxlsx::writeData(wb, sheet_name, marker_data)
+              }
             }
           }
         }
 
-        # Setup sample metadata
-        smeta$sample_col <- as.character(smeta$sample_col)
-        smeta$group_name <- as.character(smeta$group_name %||% smeta$group)
-        smeta <- smeta[!is.na(smeta$sample_col) & nzchar(smeta$sample_col), , drop = FALSE]
-        smeta <- smeta[smeta$sample_col %in% colnames(mat), , drop = FALSE]
+        # --- GO enrichment results (goora, 1dgofcs, 2dgofcs) ---
+        if (eng %in% go_engines) {
+          g_dir <- df$node_dir[i]
+          g_label <- df$label[i] %||% df$step_label[i] %||% df$engine_id[i]
+          g_label <- res_pretty_label(g_label, engine_id = df$engine_id[i])
+          g_engine <- eng
 
-        groups <- unique(smeta$group_name)
-        groups <- groups[nzchar(groups)]
+          # Get parent context
+          parent_id <- df$parent_id[i]
+          parent_label <- get_parent_label(parent_id)
 
-        # Determine overlap metric from engine type
-        overlap_metric <- if (grepl("quantified", o_engine)) "quantified" else "detected"
-        use_all_reps <- identical(overlap_metric, "quantified")
-
-        # Build per-group presence sets (same logic as tb_render_idquant_overlap)
-        # Use indices to track which proteins are present, so we can map to both protein_id and label_id
-        sets_idx <- list()
-        for (g in groups) {
-          cols <- smeta$sample_col[smeta$group_name == g]
-          cols <- intersect(as.character(cols), colnames(mat))
-          if (length(cols) == 0) next
-
-          grp_mat <- mat[, cols, drop = FALSE]
-          present <- if (isTRUE(use_all_reps)) {
-            apply(grp_mat, 1, function(x) all(is.finite(x) & !is.na(x) & x > 0))
-          } else {
-            apply(grp_mat, 1, function(x) any(is.finite(x) & !is.na(x) & x > 0))
+          # For paired GO analyses under volcano, try to get comparison and config context
+          pairing_context <- ""
+          config_name <- ""
+          if (!is.null(parent_id) && !is.na(parent_id)) {
+            parent_row <- df[df$node_id == parent_id, , drop = FALSE]
+            if (nrow(parent_row) > 0 && tolower(parent_row$engine_id[1]) == "volcano") {
+              # The label often contains the direction (up/down)
+              if (grepl("up", g_label, ignore.case = TRUE)) {
+                pairing_context <- "upregulated"
+              } else if (grepl("down", g_label, ignore.case = TRUE)) {
+                pairing_context <- "downregulated"
+              }
+              # Extract config name from node_id pattern: cfg_N__comparison_direction
+              # or from the beginning of the label before the comparison
+              node_id_parts <- strsplit(basename(df$node_id[i]), "__")[[1]]
+              if (length(node_id_parts) >= 2) {
+                config_name <- node_id_parts[1]  # e.g., "cfg_1"
+              }
+            }
           }
-          sets_idx[[g]] <- which(present)
+
+          res <- tb_load_results(g_dir)
+          if (is.null(res) || is.null(res$data)) next
+
+          # Get terms data
+          terms <- res$data$terms %||% NULL
+          if (is.null(terms) || !is.data.frame(terms) || nrow(terms) == 0) next
+
+          # Add source context columns to terms
+          terms$source_analysis <- g_label
+          terms$parent_analysis <- parent_label
+          if (nzchar(pairing_context)) {
+            terms$direction_context <- pairing_context
+          }
+          if (nzchar(config_name)) {
+            terms$config_id <- config_name
+          }
+          terms$engine_type <- g_engine
+
+          # BP/MF/CC share a page - all terms from this GO analysis go on one sheet
+          sheet_name <- make_sheet_name(paste0(parent_label, " ", g_label))
+          openxlsx::addWorksheet(wb, sheet_name)
+          openxlsx::writeData(wb, sheet_name, terms)
         }
 
-        if (length(sets_idx) == 0 || length(groups) < 2) next
+        # --- Heatmap gene lists (heatmap, ftest_heatmap) ---
+        if (eng %in% heatmap_engines) {
+          h_dir <- df$node_dir[i]
+          h_label <- df$label[i] %||% df$step_label[i] %||% df$engine_id[i]
+          h_label <- res_pretty_label(h_label, engine_id = df$engine_id[i])
+          h_engine <- eng
 
-        # Compute unique proteins for each group (proteins in this group but not in any other)
-        for (g in names(sets_idx)) {
-          other_groups <- setdiff(names(sets_idx), g)
-          other_idx <- unique(unlist(sets_idx[other_groups], use.names = FALSE))
-          unique_idx <- setdiff(sets_idx[[g]], other_idx)
+          res <- tb_load_results(h_dir)
+          if (is.null(res) || is.null(res$data)) next
 
-          if (length(unique_idx) == 0) next
+          # Get gene list from heatmap results
+          # heatmap uses matched_genes, ftest_heatmap uses gene_order
+          gene_list <- res$data$matched_genes %||% res$data$gene_order %||% character(0)
+          if (length(gene_list) == 0) next
 
-          # Get protein IDs and gene symbols for unique proteins
-          unique_proteins <- protein_id[unique_idx]
-          gene_ids <- label_id[unique_idx]
-
-          # Build export dataframe
+          # Build marker data frame with z-scores and abundance values
           marker_data <- data.frame(
-            protein_id = unique_proteins,
-            gene_id = gene_ids,
-            source_analysis = o_label,
-            group = g,
-            overlap_type = if (grepl("quantified", o_engine)) "Quantified" else "Identified",
+            gene = gene_list,
+            source_analysis = h_label,
+            engine_type = h_engine,
             stringsAsFactors = FALSE
           )
 
-          sheet_name <- make_sheet_name(paste0(g, " Unique"))
+          # Add z-score and abundance data per sample if available
+          mat_zscore <- res$data$mat_zscore
+          mat_log <- res$data$mat_log
+          sample_order <- res$data$sample_order %||% character(0)
+          group_annotations <- res$data$group_annotations
+
+          # Add mean z-score per gene (row mean of z-scores)
+          if (!is.null(mat_zscore) && is.matrix(mat_zscore) && nrow(mat_zscore) > 0) {
+            gene_idx <- match(gene_list, rownames(mat_zscore))
+            valid_idx <- !is.na(gene_idx)
+            marker_data$mean_zscore <- NA_real_
+            if (any(valid_idx)) {
+              marker_data$mean_zscore[valid_idx] <- rowMeans(mat_zscore[gene_idx[valid_idx], , drop = FALSE], na.rm = TRUE)
+            }
+
+            # Add per-sample z-scores as columns (prefixed with "zscore_")
+            if (length(sample_order) > 0 && ncol(mat_zscore) == length(sample_order)) {
+              for (si in seq_along(sample_order)) {
+                col_name <- paste0("zscore_", sample_order[si])
+                marker_data[[col_name]] <- NA_real_
+                if (any(valid_idx)) {
+                  marker_data[[col_name]][valid_idx] <- mat_zscore[gene_idx[valid_idx], si]
+                }
+              }
+            }
+          }
+
+          # Add mean abundance per gene (row mean of log-transformed values)
+          if (!is.null(mat_log) && is.matrix(mat_log) && nrow(mat_log) > 0) {
+            gene_idx <- match(gene_list, rownames(mat_log))
+            valid_idx <- !is.na(gene_idx)
+            marker_data$mean_abundance <- NA_real_
+            if (any(valid_idx)) {
+              marker_data$mean_abundance[valid_idx] <- rowMeans(mat_log[gene_idx[valid_idx], , drop = FALSE], na.rm = TRUE)
+            }
+
+            # Add per-sample abundance as columns (prefixed with "abundance_")
+            if (length(sample_order) > 0 && ncol(mat_log) == length(sample_order)) {
+              for (si in seq_along(sample_order)) {
+                col_name <- paste0("abundance_", sample_order[si])
+                marker_data[[col_name]] <- NA_real_
+                if (any(valid_idx)) {
+                  marker_data[[col_name]][valid_idx] <- mat_log[gene_idx[valid_idx], si]
+                }
+              }
+            }
+          }
+
+          # For ftest_heatmap, include stats if available
+          if (identical(h_engine, "ftest_heatmap") && !is.null(res$data$stats_table)) {
+            stats <- res$data$stats_table
+            if (is.data.frame(stats) && nrow(stats) > 0 && "gene" %in% names(stats)) {
+              # Merge stats with marker data (pval, padj, sig_label)
+              marker_data <- merge(marker_data, stats, by = "gene", all.x = TRUE)
+            }
+          }
+
+          sheet_name <- make_sheet_name(h_label)
           openxlsx::addWorksheet(wb, sheet_name)
           openxlsx::writeData(wb, sheet_name, marker_data)
+        }
+
+        # --- Overlap unique proteins per group ---
+        if (eng %in% overlap_engines) {
+          o_dir <- df$node_dir[i]
+          o_label <- df$label[i] %||% df$step_label[i] %||% df$engine_id[i]
+          o_label <- res_pretty_label(o_label, engine_id = df$engine_id[i])
+          o_engine <- eng
+
+          res <- tb_load_results(o_dir)
+          if (is.null(res) || is.null(res$data)) next
+
+          mat <- res$data$intensity_mat
+          smeta <- res$data$sample_meta
+          ids_df <- res$data$ids
+
+          if (is.null(mat) || !is.matrix(mat) || is.null(smeta) || !is.data.frame(smeta)) next
+
+          # Get protein IDs from matrix rownames (same logic as tb_render_idquant_cv)
+          protein_id <- rownames(mat)
+          rownames_were_null <- is.null(protein_id)
+          if (rownames_were_null) {
+            protein_id <- paste0("protein_", seq_len(nrow(mat)))
+          } else {
+            # Only replace empty/missing protein IDs with placeholders, not all of them
+            empty_idx <- which(!nzchar(protein_id) | is.na(protein_id))
+            if (length(empty_idx) > 0) {
+              protein_id[empty_idx] <- paste0("protein_", empty_idx)
+            }
+          }
+
+          # Build gene symbol mapping using same logic as CV Scatter (tb_render_idquant_cv)
+          label_id <- protein_id
+          if (!is.null(ids_df) && is.data.frame(ids_df) && nrow(ids_df) > 0) {
+            # Find primary ID column (protein ID) - same candidates as CV Scatter
+            primary_candidates <- c("protein_id", "proteinid", "uniprot", "uniprot_id", "accession",
+                                    "pg.proteingroups", "proteingroups")
+            primary_col <- NULL
+            for (cand in primary_candidates) {
+              if (cand %in% tolower(names(ids_df))) {
+                primary_col <- names(ids_df)[tolower(names(ids_df)) == cand][1]
+                break
+              }
+            }
+            # Fallback to first column
+            if (is.null(primary_col)) primary_col <- names(ids_df)[1]
+
+            # Find gene symbol column - same candidates as CV Scatter
+            cand_gene_cols <- c("gene_symbol", "gene", "symbol", "geneid", "gene_id", "gene_name",
+                                "pg.genes", "genes")
+            gene_col <- NULL
+            for (cand in cand_gene_cols) {
+              matches <- names(ids_df)[tolower(names(ids_df)) == cand]
+              if (length(matches) > 0) {
+                gene_col <- matches[1]
+                break
+              }
+            }
+            if (is.null(gene_col)) {
+              # Fallback: look for columns containing "gene" or "symbol" (case-insensitive)
+              gene_matches <- names(ids_df)[grepl("gene|symbol", names(ids_df), ignore.case = TRUE)]
+              gene_col <- setdiff(gene_matches, primary_col)
+              gene_col <- gene_col[1] %||% NULL
+            }
+
+            # If rownames were NULL/missing and row counts match, use direct 1:1 mapping first.
+            # This handles cases where the matrix doesn't have rownames but ids table has the data.
+            use_direct_mapping <- rownames_were_null && nrow(ids_df) == length(protein_id)
+
+            if (use_direct_mapping && !is.null(gene_col) && gene_col %in% names(ids_df)) {
+              # Direct 1:1 correspondence: row i of matrix corresponds to row i of ids
+              cand <- as.character(ids_df[[gene_col]])
+              ok <- !is.na(cand) & nzchar(cand)
+              label_id[ok] <- cand[ok]
+              # Also update protein_id from ids table for better display
+              if (!is.null(primary_col) && primary_col %in% names(ids_df)) {
+                prot_cand <- as.character(ids_df[[primary_col]])
+                prot_ok <- !is.na(prot_cand) & nzchar(prot_cand)
+                protein_id[prot_ok] <- prot_cand[prot_ok]
+              }
+            } else if (!is.null(gene_col) && gene_col %in% names(ids_df) &&
+                       !is.null(primary_col) && primary_col %in% names(ids_df)) {
+              # Build lookup map: primary_id -> gene_symbol
+              map <- stats::setNames(as.character(ids_df[[gene_col]]), as.character(ids_df[[primary_col]]))
+              mapped <- unname(map[protein_id])
+              ok <- !is.na(mapped) & nzchar(mapped)
+              label_id[ok] <- mapped[ok]
+            } else if (nrow(ids_df) == length(protein_id)) {
+              # Fallback: if row counts match, assume 1:1 correspondence
+              if (!is.null(gene_col) && gene_col %in% names(ids_df)) {
+                cand <- as.character(ids_df[[gene_col]])
+                ok <- !is.na(cand) & nzchar(cand)
+                label_id[ok] <- cand[ok]
+              }
+            }
+          }
+
+          # Setup sample metadata
+          smeta$sample_col <- as.character(smeta$sample_col)
+          smeta$group_name <- as.character(smeta$group_name %||% smeta$group)
+          smeta <- smeta[!is.na(smeta$sample_col) & nzchar(smeta$sample_col), , drop = FALSE]
+          smeta <- smeta[smeta$sample_col %in% colnames(mat), , drop = FALSE]
+
+          groups <- unique(smeta$group_name)
+          groups <- groups[nzchar(groups)]
+
+          # Determine overlap metric from engine type
+          overlap_metric <- if (grepl("quantified", o_engine)) "quantified" else "detected"
+          use_all_reps <- identical(overlap_metric, "quantified")
+
+          # Build per-group presence sets (same logic as tb_render_idquant_overlap)
+          # Use indices to track which proteins are present, so we can map to both protein_id and label_id
+          sets_idx <- list()
+          for (g in groups) {
+            cols <- smeta$sample_col[smeta$group_name == g]
+            cols <- intersect(as.character(cols), colnames(mat))
+            if (length(cols) == 0) next
+
+            grp_mat <- mat[, cols, drop = FALSE]
+            present <- if (isTRUE(use_all_reps)) {
+              apply(grp_mat, 1, function(x) all(is.finite(x) & !is.na(x) & x > 0))
+            } else {
+              apply(grp_mat, 1, function(x) any(is.finite(x) & !is.na(x) & x > 0))
+            }
+            sets_idx[[g]] <- which(present)
+          }
+
+          if (length(sets_idx) == 0 || length(groups) < 2) next
+
+          # Compute unique proteins for each group (proteins in this group but not in any other)
+          for (g in names(sets_idx)) {
+            other_groups <- setdiff(names(sets_idx), g)
+            other_idx <- unique(unlist(sets_idx[other_groups], use.names = FALSE))
+            unique_idx <- setdiff(sets_idx[[g]], other_idx)
+
+            if (length(unique_idx) == 0) next
+
+            # Get protein IDs and gene symbols for unique proteins
+            unique_proteins <- protein_id[unique_idx]
+            gene_ids <- label_id[unique_idx]
+
+            # Build export dataframe
+            marker_data <- data.frame(
+              protein_id = unique_proteins,
+              gene_id = gene_ids,
+              source_analysis = o_label,
+              group = g,
+              overlap_type = if (grepl("quantified", o_engine)) "Quantified" else "Identified",
+              stringsAsFactors = FALSE
+            )
+
+            sheet_name <- make_sheet_name(paste0(g, " Unique"))
+            openxlsx::addWorksheet(wb, sheet_name)
+            openxlsx::writeData(wb, sheet_name, marker_data)
+          }
         }
       }
 
