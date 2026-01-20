@@ -61,6 +61,9 @@
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+# Session-level registry cache (avoids rebuilding 1800+ line registry on every call)
+.registry_cache <- NULL
+
 msterp_schema_field <- function(
     name,
     type = c("choice", "bool", "int", "num", "string", "range"),
@@ -92,7 +95,11 @@ msterp_schema_field <- function(
   )
 }
 
-msterp_engine_registry <- function() {
+msterp_engine_registry <- function(force_rebuild = FALSE) {
+  if (!is.null(.registry_cache) && !isTRUE(force_rebuild)) {
+    return(.registry_cache)
+  }
+
   registry_version <- 2L
   
   mk_style <- function(width = 7, height = 6, axis_text_size = 20) {
@@ -1904,7 +1911,8 @@ msterp_engine_registry <- function() {
     if (is.null(engines[[eid]]$viewer_schema)) engines[[eid]]$viewer_schema <- list()
   }
 
-  list(registry_version = registry_version, engines = engines)
+  .registry_cache <<- list(registry_version = registry_version, engines = engines)
+  .registry_cache
 }
 
 msterp_engine_picker_hidden <- function(engine) {
