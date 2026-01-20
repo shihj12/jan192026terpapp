@@ -35,6 +35,35 @@
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+# ---- Session-level cache for terpbook I/O ------------------------------------
+# Reduces filesystem reads on cloud deployments (Posit Connect) where I/O latency
+# is higher than local SSDs. Cache is cleared when loading a new terpbook and
+# invalidated selectively when render_state is saved.
+
+.tb_cache <- new.env(parent = emptyenv())
+.tb_cache$descriptors <- list()    # node_dir|kind -> descriptor
+.tb_cache$results <- list()        # node_dir -> results RDS
+.tb_cache$render_state <- list()   # node_dir -> render_state override
+.tb_cache$defaults <- list()       # node_dir -> node defaults
+.tb_cache$effective <- list()      # node_id -> effective render state
+
+tb_cache_clear <- function() {
+  .tb_cache$descriptors <- list()
+  .tb_cache$results <- list()
+  .tb_cache$render_state <- list()
+  .tb_cache$defaults <- list()
+  .tb_cache$effective <- list()
+  invisible(TRUE)
+}
+
+tb_cache_invalidate_node <- function(node_dir) {
+  key <- tb_norm(node_dir)
+  .tb_cache$render_state[[key]] <- NULL
+  .tb_cache$defaults[[key]] <- NULL
+  .tb_cache$effective <- list()  # Clear all effective states on any change
+  invisible(TRUE)
+}
+
 tb_require_jsonlite <- function() {
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("jsonlite package is required.")
@@ -212,10 +241,16 @@ tb_node_paths <- function(node_dir) {
   )
 }
 
-tb_load_results <- function(node_dir) {
+tb_load_results <- function(node_dir, use_cache = TRUE) {
+  key <- tb_norm(node_dir)
+  if (isTRUE(use_cache) && !is.null(.tb_cache$results[[key]])) {
+    return(.tb_cache$results[[key]])
+  }
   p <- tb_node_paths(node_dir)
   if (!file.exists(p$results_rds)) return(NULL)
-  tryCatch(readRDS(p$results_rds), error = function(e) NULL)
+  res <- tryCatch(readRDS(p$results_rds), error = function(e) NULL)
+  if (isTRUE(use_cache)) .tb_cache$results[[key]] <- res
+  res
 }
 
 # ---- Node descriptors + defaults --------------------------------------------
@@ -227,12 +262,17 @@ tb_as_list_of_rows <- function(x) {
   list()
 }
 
-tb_read_node_descriptor <- function(node_dir, kind = c("step", "view")) {
+tb_read_node_descriptor <- function(node_dir, kind = c("step", "view"), use_cache = TRUE) {
   kind <- match.arg(kind)
+  key <- paste0(tb_norm(node_dir), "|", kind)
+  if (isTRUE(use_cache) && !is.null(.tb_cache$descriptors[[key]])) {
+    return(.tb_cache$descriptors[[key]])
+  }
   p <- tb_node_paths(node_dir)
   json_path <- if (kind == "step") p$step_json else p$view_json
-  if (!file.exists(json_path)) return(list())
-  tb_read_json(json_path)
+  desc <- if (file.exists(json_path)) tb_read_json(json_path) else list()
+  if (isTRUE(use_cache)) .tb_cache$descriptors[[key]] <- desc
+  desc
 }
 
 tb_read_descriptor_any <- function(node_dir) {
@@ -242,14 +282,20 @@ tb_read_descriptor_any <- function(node_dir) {
   list()
 }
 
-tb_node_defaults <- function(node_dir) {
+tb_node_defaults <- function(node_dir, use_cache = TRUE) {
   # Defaults that come WITH the terpbook (NOT user overrides).
+  key <- tb_norm(node_dir)
+  if (isTRUE(use_cache) && !is.null(.tb_cache$defaults[[key]])) {
+    return(.tb_cache$defaults[[key]])
+  }
   d <- tb_read_descriptor_any(node_dir)
-  list(
+  defaults <- list(
     style = d$style %||% list(),
     plotly = d$plotly %||% list(),
     visibility = d$visibility %||% list()
   )
+  if (isTRUE(use_cache)) .tb_cache$defaults[[key]] <- defaults
+  defaults
 }
 
 # ---- State merge helpers -----------------------------------------------------
@@ -369,18 +415,24 @@ tb_merge_states <- function(base, override) {
 
 # ---- Render state (override-only + merged) ----------------------------------
 
-tb_load_render_state_override <- function(node_dir) {
+tb_load_render_state_override <- function(node_dir, use_cache = TRUE) {
+  key <- tb_norm(node_dir)
+  if (isTRUE(use_cache) && !is.null(.tb_cache$render_state[[key]])) {
+    return(.tb_cache$render_state[[key]])
+  }
   p <- tb_node_paths(node_dir)
   if (!file.exists(p$render_state)) {
-    return(list(style = list(), plotly = NULL, visibility = NULL))
+    result <- list(style = list(), plotly = NULL, visibility = NULL)
+  } else {
+    rs <- tryCatch(tb_read_json(p$render_state), error = function(e) list())
+    result <- list(
+      style = rs$style %||% list(),
+      plotly = rs$plotly %||% NULL,
+      visibility = rs$visibility %||% NULL
+    )
   }
-  
-  rs <- tryCatch(tb_read_json(p$render_state), error = function(e) list())
-  list(
-    style = rs$style %||% list(),
-    plotly = rs$plotly %||% NULL,
-    visibility = rs$visibility %||% NULL
-  )
+  if (isTRUE(use_cache)) .tb_cache$render_state[[key]] <- result
+  result
 }
 
 tb_load_render_state <- function(node_dir) {
@@ -576,10 +628,15 @@ tb_ancestor_chain <- function(nodes_df, node_id) {
   chain
 }
 
-tb_effective_render_state <- function(nodes_df, node_id) {
+tb_effective_render_state <- function(nodes_df, node_id, use_cache = TRUE) {
+  cache_key <- as.character(node_id)
+  if (isTRUE(use_cache) && !is.null(.tb_cache$effective[[cache_key]])) {
+    return(.tb_cache$effective[[cache_key]])
+  }
+
   chain <- tb_ancestor_chain(nodes_df, node_id)
   if (length(chain) == 0) return(list(style = list(), plotly = list(), visibility = list()))
-  
+
   state <- list(style = list(), plotly = list(), visibility = list())
   for (nid in chain) {
     j <- match(nid, nodes_df$node_id)
@@ -600,5 +657,7 @@ tb_effective_render_state <- function(nodes_df, node_id) {
       }
     }
   }
+
+  if (isTRUE(use_cache)) .tb_cache$effective[[cache_key]] <- state
   state
 }

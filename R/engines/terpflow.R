@@ -128,10 +128,146 @@ msterp_schema_defaults <- function(schema) {
 }
 
 msterp_merge_defaults <- function(defaults, values) {
+
   # Merge defaults with user values: defaults provide missing keys, values override
   if (is.null(defaults) || length(defaults) == 0) return(values %||% list())
   if (is.null(values) || length(values) == 0) return(defaults)
   modifyList(defaults, values)
+}
+
+#' Combined sanitize + validate in single pass (performance optimization)
+#'
+#' Reduces schema field iterations from 4+ passes to 1 pass per schema.
+#' Handles deprecated param migration, unknown param removal, invalid choice
+#' correction, and type validation all in one loop.
+#'
+#' @param schema Schema to validate against
+#' @param values User-provided values
+#' @param engine_id Engine ID for logging context
+#' @return List with sanitized values, warnings, errors, and ok flag
+msterp_schema_sanitize_and_validate <- function(schema, values, engine_id = NULL) {
+  fields <- msterp_schema_fields(schema)
+  warnings <- character()
+  errs <- character()
+
+  if (is.null(values)) values <- list()
+  if (!is.list(values)) values <- list()
+
+  ctx <- if (!is.null(engine_id)) paste0("[", engine_id, "] ") else ""
+
+
+  # MIGRATION: sig_field -> apply_fdr (Volcano engine)
+  if ("sig_field" %in% names(values) && !"apply_fdr" %in% names(values)) {
+    sig_val <- values[["sig_field"]]
+    if (identical(sig_val, "padj")) {
+      values[["apply_fdr"]] <- TRUE
+      warnings <- c(warnings, sprintf("%sMigrated deprecated 'sig_field: padj' to 'apply_fdr: TRUE'", ctx))
+    } else if (identical(sig_val, "pval")) {
+      values[["apply_fdr"]] <- FALSE
+      warnings <- c(warnings, sprintf("%sMigrated deprecated 'sig_field: pval' to 'apply_fdr: FALSE'", ctx))
+    } else {
+      values[["apply_fdr"]] <- TRUE
+      warnings <- c(warnings, sprintf("%sDeprecated 'sig_field' has invalid value '%s'; defaulting to 'apply_fdr: TRUE'", ctx, as.character(sig_val)))
+    }
+    values[["sig_field"]] <- NULL
+  }
+
+  # Build field lookup once (single pass to build lookup)
+  schema_names <- character(length(fields))
+  field_lookup <- vector("list", length(fields))
+  for (i in seq_along(fields)) {
+    f <- fields[[i]]
+    if (is.list(f) && !is.null(f$name)) {
+      nm <- f$name
+      schema_names[i] <- nm
+      field_lookup[[i]] <- f
+      names(field_lookup)[i] <- nm
+    }
+  }
+  schema_names <- schema_names[nzchar(schema_names)]
+
+  # Remove unknown params
+  unknown_params <- setdiff(names(values), schema_names)
+  if (length(unknown_params) > 0) {
+    warnings <- c(warnings, sprintf("%sIgnoring deprecated/unknown param(s): %s", ctx, paste(unknown_params, collapse = ", ")))
+    values <- values[!names(values) %in% unknown_params]
+  }
+
+  # Single pass: sanitize choices AND validate types
+  for (nm in names(values)) {
+    f <- field_lookup[[nm]]
+    if (is.null(f)) next
+
+    v <- values[[nm]]
+    if (is.null(v)) next
+
+    type <- as.character(f$type)
+
+    # Choice validation + sanitization
+    if (identical(type, "choice")) {
+      ch <- f$choices %||% NULL
+      if (!is.null(ch) && length(ch) > 0 && !is.na(v)) {
+        vv <- as.character(v)
+        if (!vv %in% as.character(ch)) {
+          default_val <- f$default %||% ch[[1]]
+          warnings <- c(warnings, sprintf("%sParam '%s' has invalid value '%s' (not in choices); reverting to default '%s'", ctx, nm, vv, default_val))
+          values[[nm]] <- default_val
+        }
+      }
+    }
+
+    # Bool validation
+    else if (identical(type, "bool")) {
+      if (!is.logical(v) || length(v) != 1) {
+        errs <- c(errs, sprintf("'%s' must be logical.", nm))
+      }
+    }
+
+    # Numeric validation (int/num)
+    else if (type %in% c("int", "num")) {
+      if (!is.numeric(v)) {
+        errs <- c(errs, sprintf("'%s' must be numeric.", nm))
+      } else {
+        if (identical(type, "int")) {
+          bad_int <- any(!is.na(v) & (v != as.integer(v)))
+          if (isTRUE(bad_int)) errs <- c(errs, sprintf("'%s' must be integer.", nm))
+        }
+        if (!is.null(f$min)) {
+          bad_min <- any(!is.na(v) & (v < f$min))
+          if (isTRUE(bad_min)) errs <- c(errs, sprintf("'%s' must be >= %s.", nm, f$min))
+        }
+        if (!is.null(f$max)) {
+          bad_max <- any(!is.na(v) & (v > f$max))
+          if (isTRUE(bad_max)) errs <- c(errs, sprintf("'%s' must be <= %s.", nm, f$max))
+        }
+      }
+    }
+
+    # Range validation
+    else if (identical(type, "range")) {
+      if (!is.numeric(v) || length(v) != 2) {
+        errs <- c(errs, sprintf("'%s' must be a numeric vector of length 2.", nm))
+      } else {
+        if (any(is.na(v))) errs <- c(errs, sprintf("'%s' cannot contain NA.", nm))
+        if (!is.null(f$min) && any(v < f$min, na.rm = TRUE)) {
+          errs <- c(errs, sprintf("'%s' must be >= %s.", nm, f$min))
+        }
+        if (!is.null(f$max) && any(v > f$max, na.rm = TRUE)) {
+          errs <- c(errs, sprintf("'%s' must be <= %s.", nm, f$max))
+        }
+        if (!any(is.na(v)) && v[[1]] > v[[2]]) {
+          errs <- c(errs, sprintf("'%s' must be ordered (min <= max).", nm))
+        }
+      }
+    }
+
+    # String validation
+    else if (identical(type, "string")) {
+      if (!is.character(v)) errs <- c(errs, sprintf("'%s' must be character.", nm))
+    }
+  }
+
+  list(values = values, warnings = warnings, errors = errs, ok = length(errs) == 0)
 }
 
 msterp_schema_validate <- function(schema, values) {
@@ -643,19 +779,15 @@ msterp_terpflow_validate <- function(flow, registry = NULL) {
       return(invisible(FALSE))
     }
 
-    # Sanitize deprecated/unknown params before validation (Step 8 migration handling)
-    p_sanitized <- msterp_schema_sanitize_deprecated(eng$params_schema, s$params %||% list(), s$engine_id)
-    if (length(p_sanitized$warnings) > 0) warns <<- c(warns, p_sanitized$warnings)
-
-    pchk <- msterp_schema_validate(eng$params_schema, p_sanitized$values)
-    if (!pchk$ok) errs <<- c(errs, paste0(prefix, " params: ", pchk$errors))
+    # Combined sanitize + validate in single pass (performance optimization)
+    p_result <- msterp_schema_sanitize_and_validate(eng$params_schema, s$params %||% list(), s$engine_id)
+    if (length(p_result$warnings) > 0) warns <<- c(warns, p_result$warnings)
+    if (!p_result$ok) errs <<- c(errs, paste0(prefix, " params: ", p_result$errors))
 
     style_schema <- msterp_engine_style_schema_all(eng)
-    s_sanitized <- msterp_schema_sanitize_deprecated(style_schema, s$style %||% list(), s$engine_id)
-    if (length(s_sanitized$warnings) > 0) warns <<- c(warns, s_sanitized$warnings)
-
-    schk <- msterp_schema_validate(style_schema, s_sanitized$values)
-    if (!schk$ok) errs <<- c(errs, paste0(prefix, " style: ", schk$errors))
+    s_result <- msterp_schema_sanitize_and_validate(style_schema, s$style %||% list(), s$engine_id)
+    if (length(s_result$warnings) > 0) warns <<- c(warns, s_result$warnings)
+    if (!s_result$ok) errs <<- c(errs, paste0(prefix, " style: ", s_result$errors))
 
     if (!is.null(s$paired)) {
       if (!is.list(s$paired)) {
@@ -673,16 +805,14 @@ msterp_terpflow_validate <- function(flow, registry = NULL) {
               next
             }
             cfg <- s$paired$engines[[peid]] %||% list()
-            pp_san <- msterp_schema_sanitize_deprecated(peng$params_schema, cfg$params %||% list(), peid)
-            if (length(pp_san$warnings) > 0) warns <<- c(warns, pp_san$warnings)
-            ppchk <- msterp_schema_validate(peng$params_schema, pp_san$values)
-            if (!ppchk$ok) errs <<- c(errs, paste0(prefix, " paired(", peid, ") params: ", ppchk$errors))
+            pp_result <- msterp_schema_sanitize_and_validate(peng$params_schema, cfg$params %||% list(), peid)
+            if (length(pp_result$warnings) > 0) warns <<- c(warns, pp_result$warnings)
+            if (!pp_result$ok) errs <<- c(errs, paste0(prefix, " paired(", peid, ") params: ", pp_result$errors))
 
             paired_style_schema <- msterp_engine_style_schema_all(peng)
-            ps_san <- msterp_schema_sanitize_deprecated(paired_style_schema, cfg$style %||% list(), peid)
-            if (length(ps_san$warnings) > 0) warns <<- c(warns, ps_san$warnings)
-            pschk <- msterp_schema_validate(paired_style_schema, ps_san$values)
-            if (!pschk$ok) errs <<- c(errs, paste0(prefix, " paired(", peid, ") style: ", pschk$errors))
+            ps_result <- msterp_schema_sanitize_and_validate(paired_style_schema, cfg$style %||% list(), peid)
+            if (length(ps_result$warnings) > 0) warns <<- c(warns, ps_result$warnings)
+            if (!ps_result$ok) errs <<- c(errs, paste0(prefix, " paired(", peid, ") style: ", ps_result$errors))
           }
 
           peid0 <- s$paired$engine_id %||% NULL
@@ -698,16 +828,14 @@ msterp_terpflow_validate <- function(flow, registry = NULL) {
             if (is.null(peng)) {
               errs <<- c(errs, sprintf("%s missing paired engine definition: %s", prefix, peid))
             } else {
-              pp_san <- msterp_schema_sanitize_deprecated(peng$params_schema, s$paired$params %||% list(), peid)
-              if (length(pp_san$warnings) > 0) warns <<- c(warns, pp_san$warnings)
-              ppchk <- msterp_schema_validate(peng$params_schema, pp_san$values)
-              if (!ppchk$ok) errs <<- c(errs, paste0(prefix, " paired params: ", ppchk$errors))
+              pp_result <- msterp_schema_sanitize_and_validate(peng$params_schema, s$paired$params %||% list(), peid)
+              if (length(pp_result$warnings) > 0) warns <<- c(warns, pp_result$warnings)
+              if (!pp_result$ok) errs <<- c(errs, paste0(prefix, " paired params: ", pp_result$errors))
 
               paired_style_schema <- msterp_engine_style_schema_all(peng)
-              ps_san <- msterp_schema_sanitize_deprecated(paired_style_schema, s$paired$style %||% list(), peid)
-              if (length(ps_san$warnings) > 0) warns <<- c(warns, ps_san$warnings)
-              pschk <- msterp_schema_validate(paired_style_schema, ps_san$values)
-              if (!pschk$ok) errs <<- c(errs, paste0(prefix, " paired style: ", pschk$errors))
+              ps_result <- msterp_schema_sanitize_and_validate(paired_style_schema, s$paired$style %||% list(), peid)
+              if (length(ps_result$warnings) > 0) warns <<- c(warns, ps_result$warnings)
+              if (!ps_result$ok) errs <<- c(errs, paste0(prefix, " paired style: ", ps_result$errors))
             }
           }
         }

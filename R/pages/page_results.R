@@ -2526,6 +2526,11 @@ page_results_server <- function(input, output, session) {
     }
     rv$exdir <- NULL
 
+    # Clear I/O caches before loading new terpbook
+    if (exists("tb_cache_clear", mode = "function")) {
+      tb_cache_clear()
+    }
+
     msterp_set_busy(session, TRUE, "Loading terpbook...", percent = 0)
     on.exit(msterp_set_busy(session, FALSE), add = TRUE)
 

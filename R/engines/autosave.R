@@ -94,9 +94,15 @@ tb_save_render_state_atomic <- function(node_dir, patch) {
   if (!is.null(new$visibility)) out$visibility <- new$visibility
   
   out$updated_at <- as.character(Sys.time())
-  
+
   p <- tb_node_paths(node_dir)
   tb_atomic_write_json(tb_json_safe(out), p$render_state)
+
+  # Invalidate caches after saving to ensure fresh reads
+  if (exists("tb_cache_invalidate_node", mode = "function")) {
+    tb_cache_invalidate_node(node_dir)
+  }
+
   invisible(TRUE)
 }
 
