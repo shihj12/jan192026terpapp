@@ -2940,10 +2940,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         goora_obs$map[[step_id]] <- list(h_add)
       })
     }
+    message("[GO-ORA add button observers] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
 
   # Wire remove config button observers (with proper cleanup to prevent duplicates)
   observe({
+    message("[GO-ORA remove button observers] START")
+    t0_rm <- Sys.time()
     flow <- flow_rv()
     for (s in (flow$steps %||% list())) {
       if (!identical(s$engine_id, "volcano")) next
@@ -2985,7 +2988,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       }
       goora_remove_obs$map[[step_id]] <- new_handles
     }
-    message("[GO-ORA button observers] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
+    message("[GO-ORA remove button observers] DONE in ", round(difftime(Sys.time(), t0_rm, units = "secs"), 2), "s")
   })
 
   # -----------------------------
