@@ -24,7 +24,7 @@ page_home_ui <- function() {
           right: 0;
           bottom: 0;
           overflow: auto;
-          background: linear-gradient(180deg, #e8b4ba 0%, #ffffff 30%, #ffffff 70%, #e8b4ba 100%) !important;
+          background: linear-gradient(180deg, #f2ced2 0%, #ffffff 40%, #ffffff 60%, #f2ced2 100%) !important;
           font-family: 'Manrope', 'Segoe UI', sans-serif;
           color: var(--home-ink);
           display: flex;

@@ -528,6 +528,142 @@ msterp_theme_head <- function() {
         flex-direction: column;
       }
 
+      /* Tool page plot containers - mirrors results viewer */
+      .tool-plot-box {
+        width: 100%;
+        max-width: 100%;
+        aspect-ratio: var(--tool-plot-ar, 7/5);
+        overflow: hidden;
+        position: relative;
+      }
+      .tool-plot-box .shiny-plot-output,
+      .tool-plot-box .shiny-bound-output {
+        width: 100% !important;
+        height: 100% !important;
+        min-height: 0 !important;
+      }
+      .tool-plot-box .shiny-plot-output img {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: contain;
+        object-position: center;
+      }
+
+      /* Fallback for browsers without aspect-ratio */
+      @supports not (aspect-ratio: 1/1) {
+        .tool-plot-box {
+          height: 0;
+          padding-bottom: calc(100% / var(--tool-plot-ar, 1.4));
+        }
+        .tool-plot-box > * {
+          position: absolute;
+          top: 0; left: 0;
+          width: 100%; height: 100%;
+        }
+      }
+
+      /* Tool results structure */
+      .tool-results {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        flex: 1;
+        min-height: 0;
+      }
+      .tool-results .card {
+        flex-shrink: 0;
+      }
+
+      /* Tool progress bar */
+      .tool-progress-wrap { margin: 10px 0; }
+      .tool-progress-bar {
+        height: 12px; background: #e9ecef; border-radius: 6px; overflow: hidden; border: 1px solid #dee2e6;
+      }
+      .tool-progress-fill {
+        height: 100%; background: #0d6efd; width: 0%;
+        transition: width 0.3s ease;
+        border-radius: 6px;
+      }
+      .tool-progress-fill.active {
+        background: repeating-linear-gradient(
+          -45deg,
+          #0d6efd,
+          #0d6efd 10px,
+          #0a58ca 10px,
+          #0a58ca 20px
+        );
+        background-size: 28px 28px;
+        animation: tool-progress-stripe 0.6s linear infinite;
+      }
+      @keyframes tool-progress-stripe {
+        0% { background-position: 0 0; }
+        100% { background-position: 28px 0; }
+      }
+      .tool-status-row {
+        display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+      }
+      .tool-status-pill {
+        display: inline-block; padding: 4px 8px; border-radius: 999px;
+        border: 1px solid var(--border); background: #fff; font-weight: 700; font-size: 11px;
+      }
+      .tool-status-pill.running {
+        background-color: #fef3cd; border-color: #ffc107;
+        animation: tool-pulse-running 1.5s infinite;
+      }
+      @keyframes tool-pulse-running {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.7; }
+      }
+      .tool-status-msg { color: #666; font-size: 12px; }
+
+      /* Collapsible sections for tools pages */
+      .tools-collapse-section {
+        border: 1px solid var(--border-light, #e8e4df);
+        border-radius: 8px;
+        margin-bottom: 12px;
+        background: var(--bg-card, #ffffff);
+        overflow: hidden;
+      }
+      .tools-collapse-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        cursor: pointer;
+        background: var(--bg-muted, #f5f3f0);
+        transition: background var(--duration-fast, 150ms) ease;
+        user-select: none;
+      }
+      .tools-collapse-header:hover {
+        background: var(--bg-hover, #f0eeeb);
+      }
+      .tools-collapse-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+        font-size: 14px;
+      }
+      .tools-collapse-icon {
+        display: inline-block;
+        font-size: 10px;
+        color: var(--text-secondary, #5a5a5a);
+        transition: transform var(--duration-fast, 150ms) ease;
+      }
+      .tools-collapse-section.open .tools-collapse-icon {
+        transform: rotate(90deg);
+      }
+      .tools-collapse-body {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height var(--duration-normal, 250ms) ease, padding var(--duration-normal, 250ms) ease;
+        padding: 0 12px;
+      }
+      .tools-collapse-section.open .tools-collapse-body {
+        max-height: 1200px;
+        padding: 12px;
+      }
+
       /* Busy overlay */
       .msterp-busy {
         display: none;
@@ -1322,6 +1458,12 @@ msterp_theme_head <- function() {
         }
       });
 
+      // Collapsible section toggle for tools pages
+      $(document).on('click', '.tools-collapse-header', function(e) {
+        e.stopPropagation();
+        $(this).closest('.tools-collapse-section').toggleClass('open');
+      });
+
     "))
   )
 }
@@ -1424,10 +1566,32 @@ msterp_page <- function(title = NULL, actions = NULL, ..., full_bleed = FALSE, c
 }
 
 two_panel_ui <- function(left_ui, right_ui) {
+
   div(
     class = "two-panel",
     div(class = "panel-left",  left_ui),
     div(class = "panel-right", right_ui)
+  )
+}
+
+# Collapsible section helper for tools pages
+# @param id Unique ID for the section
+# @param title Section header title
+# @param open Whether section starts open (default FALSE)
+# @param ... Contents of the collapsible section
+tools_collapse_section_ui <- function(id, title, open = FALSE, ...) {
+  div(
+    class = paste("tools-collapse-section", if (open) "open" else ""),
+    id = id,
+    div(
+      class = "tools-collapse-header",
+      div(
+        class = "tools-collapse-title",
+        span(class = "tools-collapse-icon", HTML("&#9654;")),
+        title
+      )
+    ),
+    div(class = "tools-collapse-body", ...)
   )
 }
 

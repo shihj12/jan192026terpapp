@@ -1823,7 +1823,8 @@ tb_render_goora <- function(results, style, meta) {
         tb_theme_base(axis_text_size, axis_style = style$axis_style %||% "clean") +
         ggplot2::theme(
           axis.text.y = ggplot2::element_text(size = font_size),
-          axis.title.x = ggplot2::element_text(size = font_size)
+          axis.title.x = ggplot2::element_text(size = font_size),
+          legend.position = if (flip_axis) "left" else "right"
         )
     }
 
@@ -2223,7 +2224,10 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
     }
 
     # Y-axis scale with display labels (maps term_key to term display name)
-    y_scale <- ggplot2::scale_y_discrete(labels = term_display_labels)
+    y_scale <- ggplot2::scale_y_discrete(
+      labels = term_display_labels,
+      position = if (flip_axis) "right" else "left"
+    )
 
     # Create plot using fold_enrichment as x-axis, term_key as y-axis
     if (plot_type == "dot") {
@@ -2266,7 +2270,8 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
       tb_theme_base(axis_text_size, axis_style = style$axis_style %||% "clean") +
       ggplot2::theme(
         axis.text.y = ggplot2::element_text(size = font_size),
-        axis.title.x = ggplot2::element_text(size = font_size)
+        axis.title.x = ggplot2::element_text(size = font_size),
+        legend.position = if (flip_axis) "left" else "right"
       )
   }
 

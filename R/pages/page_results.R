@@ -5456,9 +5456,27 @@ page_results_server <- function(input, output, session) {
     style <- st$style %||% list()
     plotly_state <- st$plotly %||% list()
 
-    # Get current label list
-    labs <- res_volcano_label_list(style, plot_key)
-    if (length(labs) == 0) return()
+    # Get current label list - must match the order annotations were created in tb_volcano_plotly
+    # Annotations are created in df row order (filtered by labs), not in labs order
+    res <- active_results()
+    if (is.null(res)) return()
+    visibility <- st$visibility %||% list()
+    state <- res_volcano_plot_state(res, style, visibility, plot_key, plotly_state)
+    if (is.null(state)) return()
+
+    # Get labels in the same order as annotations (df row order, not text input order)
+    # Must replicate the exact filtering done in tb_volcano_plotly
+    df <- state$df
+    labs_input <- res_volcano_label_list(style, plot_key)
+    df_lab <- df[df$gene %in% labs_input, , drop = FALSE]
+    if (nrow(df_lab) == 0) return()
+    # Apply the same hide_nonsig filter as tb_volcano_plotly (line 979-981)
+    if (identical(style$label_mode %||% "color_sig", "hide_nonsig")) {
+      df_lab <- df_lab[df_lab$sig != "nonsig", , drop = FALSE]
+    }
+    if (nrow(df_lab) == 0) return()
+    # This is the order annotations were created in tb_volcano_plotly
+    labs <- as.character(df_lab$gene)
 
     # Check for annotation position changes
     # Format: annotations[0].x, annotations[0].y, etc.
@@ -5474,25 +5492,22 @@ page_results_server <- function(input, output, session) {
           if (idx >= 1 && idx <= length(labs)) {
             gene <- labs[idx]
 
-            # Update plotly state with new position
+            # Update plotly state with new position (normalized from data coords to [0,1])
             res_update_plotly_labels(plot_key, function(cur_labels) {
               if (is.null(cur_labels[[gene]])) cur_labels[[gene]] <- list()
+
+              # Normalize the new coordinate value from data coords to [0,1]
               if (coord == "x") {
-                cur_labels[[gene]]$x <- value
+                norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
+                cur_labels[[gene]]$x <- norm$x[[1]]
               } else if (coord == "y") {
-                cur_labels[[gene]]$y <- value
+                norm <- tb_normalize_coords(0, value, state$xlim, state$ylim)
+                cur_labels[[gene]]$y <- norm$y[[1]]
               }
-              # Store current axis ranges for normalized positioning
-              state <- isolate({
-                res <- active_results()
-                visibility <- active_effective_state()$visibility %||% list()
-                plotly_state <- active_effective_state()$plotly %||% list()
-                res_volcano_plot_state(res, style, visibility, plot_key, plotly_state)
-              })
-              if (!is.null(state)) {
-                cur_labels[[gene]]$x_range <- state$xlim
-                cur_labels[[gene]]$y_range <- state$ylim
-              }
+
+              # Store current axis ranges for denormalization on render
+              cur_labels[[gene]]$x_range <- state$xlim
+              cur_labels[[gene]]$y_range <- state$ylim
               cur_labels
             })
             updated <- TRUE
@@ -5544,20 +5559,30 @@ page_results_server <- function(input, output, session) {
                   value <- relayout_data[[key]]
 
                   if (idx >= 1 && idx <= length(labs)) {
-                    term <- labs[idx]
-                    # Find term_id for this term
+                    # Get term_id directly from df_plot at the same index
+                    # This matches how annotations were created in tb_2dgofcs_plotly
                     df_plot <- state$df_plot
-                    term_row <- df_plot[df_plot$term == term, , drop = FALSE]
-                    if (nrow(term_row) > 0) {
-                      term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term)
+                    # df_lab in tb_2dgofcs_plotly is df_plot[df_plot$term %in% labs, ] which
+                    # keeps all rows (since labs = df_plot$term), so annotation idx maps to df_plot[idx,]
+                    df_lab <- df_plot[df_plot$term %in% labs, , drop = FALSE]
+                    if (idx <= nrow(df_lab)) {
+                      term_row <- df_lab[idx, , drop = FALSE]
+                      term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term_row$term[1])
 
+                      # Update plotly state with new position (normalized from data coords to [0,1])
                       res_update_plotly_labels(plot_key, function(cur_labels) {
                         if (is.null(cur_labels[[term_id]])) cur_labels[[term_id]] <- list()
+
+                        # Normalize the new coordinate value from data coords to [0,1]
                         if (coord == "x") {
-                          cur_labels[[term_id]]$x <- value
+                          norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
+                          cur_labels[[term_id]]$x <- norm$x[[1]]
                         } else if (coord == "y") {
-                          cur_labels[[term_id]]$y <- value
+                          norm <- tb_normalize_coords(0, value, state$xlim, state$ylim)
+                          cur_labels[[term_id]]$y <- norm$y[[1]]
                         }
+
+                        # Store current axis ranges for denormalization on render
                         cur_labels[[term_id]]$x_range <- state$xlim
                         cur_labels[[term_id]]$y_range <- state$ylim
                         cur_labels
