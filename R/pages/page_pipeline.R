@@ -1728,29 +1728,37 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   }, ignoreInit = TRUE)
   
   observeEvent(input$tf_load_terpflow, {
+    message("[tf_load_terpflow observer] TRIGGERED")
     f <- input$tf_load_terpflow
     if (is.null(f) || is.null(f$datapath) || !nzchar(f$datapath)) return()
-    
+
     mode <- load_mode_rv() %||% NULL
     if (!mode %in% c("edit", "duplicate")) return()
-    
+
+    message("[tf_load_terpflow observer] loading file: ", f$name)
     res <- tryCatch({
       flow <- msterp_terpflow_load(f$datapath, registry = registry)
-      
+      message("[tf_load_terpflow observer] load complete, processing meta...")
+
       # file meta
       nm <- f$name %||% "pipeline.terpflow"
       base <- sub("\\.terpflow$", "", nm, ignore.case = TRUE)
       base <- gsub("[^A-Za-z0-9._-]+", "_", base)
-      
+
       if (identical(mode, "duplicate")) {
+        message("[tf_load_terpflow observer] duplicate mode, generating new ID...")
         flow$pipeline_id <- msterp_make_id("terpflow")
         flow$created <- Sys.time()
         flow$pipeline_name <- paste0(flow$pipeline_name %||% base, "_copy")
       }
-      
+
+      message("[tf_load_terpflow observer] returning result")
       list(flow = flow, meta = list(name = nm, base = base))
-    }, error = function(e) list(error = conditionMessage(e)))
-    
+    }, error = function(e) {
+      message("[tf_load_terpflow observer] ERROR: ", conditionMessage(e))
+      list(error = conditionMessage(e))
+    })
+
     if (!is.null(res$error)) {
       showModal(modalDialog(
         title = "Could not load .terpflow",
@@ -1760,8 +1768,10 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       ))
       return()
     }
-    
+
+    message("[tf_load_terpflow observer] calling enter_editor...")
     enter_editor(res$flow, mode = mode, loaded_file = res$meta)
+    message("[tf_load_terpflow observer] DONE")
   }, ignoreInit = TRUE)
   
   # Exit editor -> Home (do not stop app)
