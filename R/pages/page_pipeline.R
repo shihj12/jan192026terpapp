@@ -2636,8 +2636,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   # DP nested UI outputs
   # -----------------------------
   observe({
+    message("[DP nested UI observe] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
-    if (length(flow$steps %||% list()) == 0) return()
+    if (length(flow$steps %||% list()) == 0) {
+      message("[DP nested UI observe] no steps, returning")
+      return()
+    }
 
     # Collect DP steps with their parent container engine_id (NULL if top-level)
     dp_steps <- list()
@@ -2695,16 +2700,20 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         })
       })
     }
+    message("[DP nested UI observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
-  
+
   # -----------------------------
   # Wire per-step buttons (up/down/remove)
   # -----------------------------
   obs <- reactiveValues(map = list())
-  
+
   observe({
+    message("[Wire per-step buttons observe] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
     ids <- vapply(flow$steps %||% list(), function(s) s$step_id, character(1))
+    message("[Wire per-step buttons observe] processing ", length(ids), " steps")
     
     existing <- names(obs$map)
     removed <- setdiff(existing, ids)
@@ -2755,6 +2764,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         })
       }
     }
+    message("[Wire per-step buttons observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
 
   # -----------------------------
@@ -2766,6 +2776,8 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
 
   # Initialize/cleanup GO-ORA configs for volcano steps
   observe({
+    message("[GO-ORA configs observe] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
     volcano_ids <- vapply(
       Filter(function(s) identical(s$engine_id, "volcano"), flow$steps %||% list()),
@@ -2886,10 +2898,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         })
       })
     }
+    message("[GO-ORA configs observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
 
   # Wire add/remove config button observers
   observe({
+    message("[GO-ORA button observers] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
     volcano_ids <- vapply(
       Filter(function(s) identical(s$engine_id, "volcano"), flow$steps %||% list()),
@@ -2967,6 +2982,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       }
       goora_remove_obs$map[[step_id]] <- new_handles
     }
+    message("[GO-ORA button observers] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
 
   # -----------------------------
@@ -2975,8 +2991,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   obs_sub <- reactiveValues(map = list())
 
   observe({
+    message("[Wire per-substep buttons observe] START")
+    t0 <- Sys.time()
     flow <- flow_rv()
-    if (length(flow$steps %||% list()) == 0) return()
+    if (length(flow$steps %||% list()) == 0) {
+      message("[Wire per-substep buttons observe] no steps, returning")
+      return()
+    }
 
     parent_by_sub <- list()
     for (s in (flow$steps %||% list())) {
@@ -3039,8 +3060,9 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         })
       }
     }
+    message("[Wire per-substep buttons observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
-  
+
   # -----------------------------
   # Build / Export (sidebar)
   # -----------------------------
