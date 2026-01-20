@@ -18,13 +18,18 @@ page_home_ui <- function() {
 
         #home-landing {
           min-height: 100vh;
-          position: relative;
-          overflow: hidden;
-          background: linear-gradient(0deg, var(--primary-light, #f8e8ea) 0%, var(--bg-page, #faf9f7) 48%, var(--primary-light, #f8e8ea) 100%);
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          overflow: auto;
+          background: linear-gradient(180deg, #e8b4ba 0%, #ffffff 30%, #ffffff 70%, #e8b4ba 100%) !important;
           font-family: 'Manrope', 'Segoe UI', sans-serif;
           color: var(--home-ink);
           display: flex;
           flex-direction: column;
+          z-index: 100;
         }
 
         #home-landing .home-container {
