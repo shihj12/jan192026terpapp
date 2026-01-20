@@ -2822,10 +2822,13 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         }
       }
     }
+    message("[GO-ORA configs observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   })
 
   # Render GO-ORA configs UI for each volcano step
   observe({
+    message("[GO-ORA render UI observe] START")
+    t0_render <- Sys.time()
     flow <- flow_rv()
     for (s in (flow$steps %||% list())) {
       if (!identical(s$engine_id, "volcano")) next
@@ -2898,7 +2901,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
         })
       })
     }
-    message("[GO-ORA configs observe] DONE in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
+    message("[GO-ORA render UI observe] DONE in ", round(difftime(Sys.time(), t0_render, units = "secs"), 2), "s")
   })
 
   # Wire add/remove config button observers
