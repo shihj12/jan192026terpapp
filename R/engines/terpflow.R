@@ -1025,9 +1025,17 @@ msterp_terpflow_migrate_legacy_idquant_cv_split <- function(flow, registry) {
 }
 
 msterp_terpflow_load <- function(path, registry = NULL) {
-  registry <- msterp_resolve_registry(registry)
+  message("[terpflow_load] START")
+  t0 <- Sys.time()
 
+  message("[terpflow_load] resolving registry...")
+  registry <- msterp_resolve_registry(registry)
+  message("[terpflow_load] registry resolved in ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
+
+  message("[terpflow_load] reading RDS...")
+  t1 <- Sys.time()
   obj <- readRDS(path)
+  message("[terpflow_load] RDS read in ", round(difftime(Sys.time(), t1, units = "secs"), 2), "s")
 
   # Schema evolution: normalize legacy engine IDs before validation.
   if (exists("migrate_legacy_engine_name", mode = "function")) {
@@ -1053,12 +1061,20 @@ msterp_terpflow_load <- function(path, registry = NULL) {
     }
   }
 
-  # Schema evolution: legacy idquant steps become a container with default substeps.
+  message("[terpflow_load] migrating idquant container...")
+  t2 <- Sys.time()
   obj <- msterp_terpflow_migrate_legacy_idquant_container(obj, registry = registry)
-  # Schema evolution: legacy idquant_cv substeps split into scatter + bar engines.
-  obj <- msterp_terpflow_migrate_legacy_idquant_cv_split(obj, registry = registry)
+  message("[terpflow_load] idquant container migrated in ", round(difftime(Sys.time(), t2, units = "secs"), 2), "s")
 
+  message("[terpflow_load] migrating idquant cv split...")
+  t3 <- Sys.time()
+  obj <- msterp_terpflow_migrate_legacy_idquant_cv_split(obj, registry = registry)
+  message("[terpflow_load] idquant cv split migrated in ", round(difftime(Sys.time(), t3, units = "secs"), 2), "s")
+
+  message("[terpflow_load] validating...")
+  t4 <- Sys.time()
   v <- msterp_terpflow_validate(obj, registry)
+  message("[terpflow_load] validated in ", round(difftime(Sys.time(), t4, units = "secs"), 2), "s")
   if (!v$ok) stop("Invalid .terpflow:\n", paste(v$errors, collapse = "\n"))
 
   # Log warnings for deprecated/unknown params (Step 8: migration handling)
@@ -1068,13 +1084,16 @@ msterp_terpflow_load <- function(path, registry = NULL) {
     }
   }
 
-  # Merge defaults for both params and style (style + viewer)
+  message("[terpflow_load] applying step defaults...")
+  t5 <- Sys.time()
   if (!is.null(obj$steps) && length(obj$steps) > 0) {
     for (i in seq_along(obj$steps)) {
       obj$steps[[i]] <- msterp_terpflow_apply_step_defaults(obj$steps[[i]], registry)
     }
   }
+  message("[terpflow_load] step defaults applied in ", round(difftime(Sys.time(), t5, units = "secs"), 2), "s")
 
+  message("[terpflow_load] DONE total: ", round(difftime(Sys.time(), t0, units = "secs"), 2), "s")
   obj
 }
 
