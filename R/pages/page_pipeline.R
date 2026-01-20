@@ -2944,14 +2944,32 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
   })
 
   # Wire remove config button observers (with proper cleanup to prevent duplicates)
+  # Use observeEvent on goora_configs_rv$map to only trigger when configs actually change
+  goora_remove_last_signature <- reactiveVal(NULL)
+
   observe({
-    message("[GO-ORA remove button observers] START")
-    t0_rm <- Sys.time()
+    # Only react to flow changes (for volcano step detection)
     flow <- flow_rv()
+    # Read configs in isolate to avoid reactive loop
+    configs_map <- isolate(goora_configs_rv$map)
+
+    # Build signature of current state
+    volcano_ids <- character()
     for (s in (flow$steps %||% list())) {
-      if (!identical(s$engine_id, "volcano")) next
-      step_id <- s$step_id
-      configs <- goora_configs_rv$map[[step_id]] %||% list()
+      if (identical(s$engine_id, "volcano")) {
+        volcano_ids <- c(volcano_ids, s$step_id)
+      }
+    }
+    sig <- paste(volcano_ids, sapply(volcano_ids, function(sid) length(configs_map[[sid]] %||% list())), collapse = "|")
+
+    # Skip if signature unchanged
+    if (identical(sig, isolate(goora_remove_last_signature()))) return()
+    goora_remove_last_signature(sig)
+
+    message("[GO-ORA remove button observers] START (sig changed)")
+
+    for (step_id in volcano_ids) {
+      configs <- configs_map[[step_id]] %||% list()
 
       # Destroy old observers for this step to prevent duplicates
       old_handles <- goora_remove_obs$map[[step_id]]
@@ -2988,7 +3006,7 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       }
       goora_remove_obs$map[[step_id]] <- new_handles
     }
-    message("[GO-ORA remove button observers] DONE in ", round(difftime(Sys.time(), t0_rm, units = "secs"), 2), "s")
+    message("[GO-ORA remove button observers] DONE")
   })
 
   # -----------------------------
