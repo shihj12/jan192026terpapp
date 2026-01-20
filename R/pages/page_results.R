@@ -8767,10 +8767,83 @@ page_results_server <- function(input, output, session) {
 
         if (is.null(mat) || !is.matrix(mat) || is.null(smeta) || !is.data.frame(smeta)) next
 
-        # Get protein IDs from matrix rownames
+        # Get protein IDs from matrix rownames (same logic as tb_render_idquant_cv)
         protein_id <- rownames(mat)
-        if (is.null(protein_id) || any(!nzchar(protein_id))) {
+        rownames_were_null <- is.null(protein_id)
+        if (rownames_were_null) {
           protein_id <- paste0("protein_", seq_len(nrow(mat)))
+        } else {
+          # Only replace empty/missing protein IDs with placeholders, not all of them
+          empty_idx <- which(!nzchar(protein_id) | is.na(protein_id))
+          if (length(empty_idx) > 0) {
+            protein_id[empty_idx] <- paste0("protein_", empty_idx)
+          }
+        }
+
+        # Build gene symbol mapping using same logic as CV Scatter (tb_render_idquant_cv)
+        label_id <- protein_id
+        if (!is.null(ids_df) && is.data.frame(ids_df) && nrow(ids_df) > 0) {
+          # Find primary ID column (protein ID) - same candidates as CV Scatter
+          primary_candidates <- c("protein_id", "proteinid", "uniprot", "uniprot_id", "accession",
+                                  "pg.proteingroups", "proteingroups")
+          primary_col <- NULL
+          for (cand in primary_candidates) {
+            if (cand %in% tolower(names(ids_df))) {
+              primary_col <- names(ids_df)[tolower(names(ids_df)) == cand][1]
+              break
+            }
+          }
+          # Fallback to first column
+          if (is.null(primary_col)) primary_col <- names(ids_df)[1]
+
+          # Find gene symbol column - same candidates as CV Scatter
+          cand_gene_cols <- c("gene_symbol", "gene", "symbol", "geneid", "gene_id", "gene_name",
+                              "pg.genes", "genes")
+          gene_col <- NULL
+          for (cand in cand_gene_cols) {
+            matches <- names(ids_df)[tolower(names(ids_df)) == cand]
+            if (length(matches) > 0) {
+              gene_col <- matches[1]
+              break
+            }
+          }
+          if (is.null(gene_col)) {
+            # Fallback: look for columns containing "gene" or "symbol" (case-insensitive)
+            gene_matches <- names(ids_df)[grepl("gene|symbol", names(ids_df), ignore.case = TRUE)]
+            gene_col <- setdiff(gene_matches, primary_col)
+            gene_col <- gene_col[1] %||% NULL
+          }
+
+          # If rownames were NULL/missing and row counts match, use direct 1:1 mapping first.
+          # This handles cases where the matrix doesn't have rownames but ids table has the data.
+          use_direct_mapping <- rownames_were_null && nrow(ids_df) == length(protein_id)
+
+          if (use_direct_mapping && !is.null(gene_col) && gene_col %in% names(ids_df)) {
+            # Direct 1:1 correspondence: row i of matrix corresponds to row i of ids
+            cand <- as.character(ids_df[[gene_col]])
+            ok <- !is.na(cand) & nzchar(cand)
+            label_id[ok] <- cand[ok]
+            # Also update protein_id from ids table for better display
+            if (!is.null(primary_col) && primary_col %in% names(ids_df)) {
+              prot_cand <- as.character(ids_df[[primary_col]])
+              prot_ok <- !is.na(prot_cand) & nzchar(prot_cand)
+              protein_id[prot_ok] <- prot_cand[prot_ok]
+            }
+          } else if (!is.null(gene_col) && gene_col %in% names(ids_df) &&
+                     !is.null(primary_col) && primary_col %in% names(ids_df)) {
+            # Build lookup map: primary_id -> gene_symbol
+            map <- stats::setNames(as.character(ids_df[[gene_col]]), as.character(ids_df[[primary_col]]))
+            mapped <- unname(map[protein_id])
+            ok <- !is.na(mapped) & nzchar(mapped)
+            label_id[ok] <- mapped[ok]
+          } else if (nrow(ids_df) == length(protein_id)) {
+            # Fallback: if row counts match, assume 1:1 correspondence
+            if (!is.null(gene_col) && gene_col %in% names(ids_df)) {
+              cand <- as.character(ids_df[[gene_col]])
+              ok <- !is.na(cand) & nzchar(cand)
+              label_id[ok] <- cand[ok]
+            }
+          }
         }
 
         # Setup sample metadata
@@ -8787,7 +8860,8 @@ page_results_server <- function(input, output, session) {
         use_all_reps <- identical(overlap_metric, "quantified")
 
         # Build per-group presence sets (same logic as tb_render_idquant_overlap)
-        sets <- list()
+        # Use indices to track which proteins are present, so we can map to both protein_id and label_id
+        sets_idx <- list()
         for (g in groups) {
           cols <- smeta$sample_col[smeta$group_name == g]
           cols <- intersect(as.character(cols), colnames(mat))
@@ -8799,58 +8873,22 @@ page_results_server <- function(input, output, session) {
           } else {
             apply(grp_mat, 1, function(x) any(is.finite(x) & !is.na(x) & x > 0))
           }
-          sets[[g]] <- protein_id[present]
+          sets_idx[[g]] <- which(present)
         }
 
-        if (length(sets) == 0 || length(groups) < 2) next
-
-        # Build gene ID mapping from ids dataframe
-        prot_to_gene <- NULL
-        if (!is.null(ids_df) && is.data.frame(ids_df) && nrow(ids_df) > 0) {
-          # Find gene column
-          gene_col_candidates <- c("GeneID", "Gene", "gene_id", "gene_symbol", "gene", "Gene.Symbol", "Gene.Name")
-          gene_col <- NULL
-          for (cand in gene_col_candidates) {
-            if (cand %in% names(ids_df)) {
-              gene_col <- cand
-              break
-            }
-          }
-
-          # Find protein column - first check if rownames are protein IDs
-          if (!is.null(gene_col)) {
-            if (!is.null(rownames(ids_df)) && all(protein_id[1:min(5, length(protein_id))] %in% rownames(ids_df))) {
-              # Rownames are protein IDs
-              prot_to_gene <- stats::setNames(as.character(ids_df[[gene_col]]), rownames(ids_df))
-            } else {
-              # Look for protein column
-              prot_col_candidates <- c("ProteinID", "Protein", "protein_id", "Protein.ID", "Accession")
-              for (cand in prot_col_candidates) {
-                if (cand %in% names(ids_df)) {
-                  prot_to_gene <- stats::setNames(as.character(ids_df[[gene_col]]), as.character(ids_df[[cand]]))
-                  break
-                }
-              }
-            }
-          }
-        }
+        if (length(sets_idx) == 0 || length(groups) < 2) next
 
         # Compute unique proteins for each group (proteins in this group but not in any other)
-        for (g in names(sets)) {
-          other_groups <- setdiff(names(sets), g)
-          other_proteins <- unique(unlist(sets[other_groups], use.names = FALSE))
-          unique_proteins <- setdiff(sets[[g]], other_proteins)
+        for (g in names(sets_idx)) {
+          other_groups <- setdiff(names(sets_idx), g)
+          other_idx <- unique(unlist(sets_idx[other_groups], use.names = FALSE))
+          unique_idx <- setdiff(sets_idx[[g]], other_idx)
 
-          if (length(unique_proteins) == 0) next
+          if (length(unique_idx) == 0) next
 
-          # Map protein IDs to gene IDs
-          gene_ids <- if (!is.null(prot_to_gene)) {
-            mapped <- unname(prot_to_gene[unique_proteins])
-            # Use protein ID as fallback for unmapped
-            ifelse(is.na(mapped) | !nzchar(mapped), unique_proteins, mapped)
-          } else {
-            unique_proteins
-          }
+          # Get protein IDs and gene symbols for unique proteins
+          unique_proteins <- protein_id[unique_idx]
+          gene_ids <- label_id[unique_idx]
 
           # Build export dataframe
           marker_data <- data.frame(
