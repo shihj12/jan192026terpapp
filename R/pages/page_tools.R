@@ -98,7 +98,10 @@ page_tools_server <- function(input, output, session, app_state) {
     rendered = NULL,
     status_msg = NULL,
     status_level = NULL,
-    input_count = NULL
+    input_count = NULL,
+    # Stored parameters to persist across navigation
+    stored_params = NULL,
+    stored_genes = NULL
   )
 
   # Reactive values for 1D GO-FCS
@@ -107,7 +110,10 @@ page_tools_server <- function(input, output, session, app_state) {
     rendered = NULL,
     status_msg = NULL,
     status_level = NULL,
-    input_count = NULL
+    input_count = NULL,
+    # Stored parameters to persist across navigation
+    stored_params = NULL,
+    stored_genes = NULL
   )
 
   # Reactive values for 2D GO-FCS
@@ -116,7 +122,12 @@ page_tools_server <- function(input, output, session, app_state) {
     rendered = NULL,
     status_msg = NULL,
     status_level = NULL,
-    input_count = NULL
+    input_count = NULL,
+    # Stored parameters to persist across navigation
+    stored_params = NULL,
+    stored_genes = NULL,
+    stored_x_label = NULL,
+    stored_y_label = NULL
   )
 
   # Shared TerpBase loading function
@@ -170,6 +181,26 @@ page_tools_server <- function(input, output, session, app_state) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$tools_goora_back, {
+    # Save current parameters before leaving
+    rv$stored_params <- list(
+      fdr_cutoff = input$tools_goora_fdr_cutoff,
+      min_term_size = input$tools_goora_min_term_size,
+      min_overlap = input$tools_goora_min_overlap,
+      max_terms = input$tools_goora_max_terms,
+      ontology_view = input$tools_goora_ontology_view,
+      plot_type = input$tools_goora_plot_type,
+      color_mode = input$tools_goora_color_mode,
+      fdr_palette = input$tools_goora_fdr_palette,
+      flat_color = input$tools_goora_flat_color,
+      alpha = input$tools_goora_alpha,
+      show_go_id = input$tools_goora_show_go_id,
+      flip_axis = input$tools_goora_flip_axis,
+      font_size = input$tools_goora_font_size,
+      axis_text_size = input$tools_goora_axis_text_size,
+      width = input$tools_goora_width,
+      height = input$tools_goora_height
+    )
+    rv$stored_genes <- input$tools_goora_genes
     current_tool("landing")
   }, ignoreInit = TRUE)
 
@@ -178,6 +209,25 @@ page_tools_server <- function(input, output, session, app_state) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$tools_1dgofcs_back, {
+    # Save current parameters before leaving
+    rv_1dgofcs$stored_params <- list(
+      fdr_cutoff = input$tools_1dgofcs_fdr_cutoff,
+      min_term_size = input$tools_1dgofcs_min_term_size,
+      max_terms = input$tools_1dgofcs_max_terms,
+      ontology_view = input$tools_1dgofcs_ontology_view,
+      plot_type = input$tools_1dgofcs_plot_type,
+      color_mode = input$tools_1dgofcs_color_mode,
+      fdr_palette = input$tools_1dgofcs_fdr_palette,
+      flat_color = input$tools_1dgofcs_flat_color,
+      alpha = input$tools_1dgofcs_alpha,
+      show_go_id = input$tools_1dgofcs_show_go_id,
+      flip_axis = input$tools_1dgofcs_flip_axis,
+      font_size = input$tools_1dgofcs_font_size,
+      axis_text_size = input$tools_1dgofcs_axis_text_size,
+      width = input$tools_1dgofcs_width,
+      height = input$tools_1dgofcs_height
+    )
+    rv_1dgofcs$stored_genes <- input$tools_1dgofcs_genes
     current_tool("landing")
   }, ignoreInit = TRUE)
 
@@ -186,7 +236,136 @@ page_tools_server <- function(input, output, session, app_state) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$tools_2dgofcs_back, {
+    # Save current parameters before leaving
+    rv_2dgofcs$stored_params <- list(
+      fdr_cutoff = input$tools_2dgofcs_fdr_cutoff,
+      min_term_size = input$tools_2dgofcs_min_term_size,
+      max_terms = input$tools_2dgofcs_max_terms,
+      ontology_view = input$tools_2dgofcs_ontology_view,
+      color_mode = input$tools_2dgofcs_color_mode,
+      fdr_palette = input$tools_2dgofcs_fdr_palette,
+      flat_color = input$tools_2dgofcs_flat_color,
+      dot_alpha = input$tools_2dgofcs_dot_alpha,
+      show_ref_lines = input$tools_2dgofcs_show_ref_lines,
+      show_diagonal_guides = input$tools_2dgofcs_show_diagonal_guides,
+      label_font_size = input$tools_2dgofcs_label_font_size,
+      axis_text_size = input$tools_2dgofcs_axis_text_size,
+      width = input$tools_2dgofcs_width,
+      height = input$tools_2dgofcs_height
+    )
+    rv_2dgofcs$stored_genes <- input$tools_2dgofcs_genes
+    rv_2dgofcs$stored_x_label <- input$tools_2dgofcs_x_label
+    rv_2dgofcs$stored_y_label <- input$tools_2dgofcs_y_label
     current_tool("landing")
+  }, ignoreInit = TRUE)
+
+  # Helper to restore parameters after UI is rendered
+  # Uses observe + invalidateLater for a delayed update without shinyjs
+  tools_restore_after_delay <- function(restore_fn, delay_ms = 150) {
+    restore_done <- FALSE
+    observe({
+      if (!restore_done) {
+        invalidateLater(delay_ms, session)
+        restore_done <<- TRUE
+      } else {
+        restore_fn()
+      }
+    })
+  }
+
+  # Restore stored parameters when tools are opened
+  observeEvent(current_tool(), {
+    tool <- current_tool()
+
+    # Restore GO-ORA parameters
+    if (tool == "goora" && !is.null(rv$stored_params)) {
+      p <- rv$stored_params
+      genes <- rv$stored_genes
+      # Schedule restore after UI renders
+      observe({
+        invalidateLater(150, session)
+      }, once = TRUE)
+      observe({
+        # Check if input exists (UI has rendered)
+        req(input$tools_goora_fdr_cutoff)
+        isolate({
+          if (!is.null(p$fdr_cutoff)) updateNumericInput(session, "tools_goora_fdr_cutoff", value = p$fdr_cutoff)
+          if (!is.null(p$min_term_size)) updateNumericInput(session, "tools_goora_min_term_size", value = p$min_term_size)
+          if (!is.null(p$min_overlap)) updateNumericInput(session, "tools_goora_min_overlap", value = p$min_overlap)
+          if (!is.null(p$max_terms)) updateNumericInput(session, "tools_goora_max_terms", value = p$max_terms)
+          if (!is.null(p$ontology_view)) updateSelectInput(session, "tools_goora_ontology_view", selected = p$ontology_view)
+          if (!is.null(p$plot_type)) updateSelectInput(session, "tools_goora_plot_type", selected = p$plot_type)
+          if (!is.null(p$color_mode)) updateSelectInput(session, "tools_goora_color_mode", selected = p$color_mode)
+          if (!is.null(p$fdr_palette)) updateSelectInput(session, "tools_goora_fdr_palette", selected = p$fdr_palette)
+          if (!is.null(p$flat_color)) updateTextInput(session, "tools_goora_flat_color", value = p$flat_color)
+          if (!is.null(p$alpha)) updateSliderInput(session, "tools_goora_alpha", value = p$alpha)
+          if (!is.null(p$show_go_id)) updateCheckboxInput(session, "tools_goora_show_go_id", value = p$show_go_id)
+          if (!is.null(p$flip_axis)) updateCheckboxInput(session, "tools_goora_flip_axis", value = p$flip_axis)
+          if (!is.null(p$font_size)) updateNumericInput(session, "tools_goora_font_size", value = p$font_size)
+          if (!is.null(p$axis_text_size)) updateNumericInput(session, "tools_goora_axis_text_size", value = p$axis_text_size)
+          if (!is.null(p$width)) updateNumericInput(session, "tools_goora_width", value = p$width)
+          if (!is.null(p$height)) updateNumericInput(session, "tools_goora_height", value = p$height)
+          if (!is.null(genes)) updateTextAreaInput(session, "tools_goora_genes", value = genes)
+        })
+      }, once = TRUE)
+    }
+
+    # Restore 1D GO-FCS parameters
+    if (tool == "1dgofcs" && !is.null(rv_1dgofcs$stored_params)) {
+      p <- rv_1dgofcs$stored_params
+      genes <- rv_1dgofcs$stored_genes
+      observe({
+        req(input$tools_1dgofcs_fdr_cutoff)
+        isolate({
+          if (!is.null(p$fdr_cutoff)) updateNumericInput(session, "tools_1dgofcs_fdr_cutoff", value = p$fdr_cutoff)
+          if (!is.null(p$min_term_size)) updateNumericInput(session, "tools_1dgofcs_min_term_size", value = p$min_term_size)
+          if (!is.null(p$max_terms)) updateNumericInput(session, "tools_1dgofcs_max_terms", value = p$max_terms)
+          if (!is.null(p$ontology_view)) updateSelectInput(session, "tools_1dgofcs_ontology_view", selected = p$ontology_view)
+          if (!is.null(p$plot_type)) updateSelectInput(session, "tools_1dgofcs_plot_type", selected = p$plot_type)
+          if (!is.null(p$color_mode)) updateSelectInput(session, "tools_1dgofcs_color_mode", selected = p$color_mode)
+          if (!is.null(p$fdr_palette)) updateSelectInput(session, "tools_1dgofcs_fdr_palette", selected = p$fdr_palette)
+          if (!is.null(p$flat_color)) updateTextInput(session, "tools_1dgofcs_flat_color", value = p$flat_color)
+          if (!is.null(p$alpha)) updateSliderInput(session, "tools_1dgofcs_alpha", value = p$alpha)
+          if (!is.null(p$show_go_id)) updateCheckboxInput(session, "tools_1dgofcs_show_go_id", value = p$show_go_id)
+          if (!is.null(p$flip_axis)) updateCheckboxInput(session, "tools_1dgofcs_flip_axis", value = p$flip_axis)
+          if (!is.null(p$font_size)) updateNumericInput(session, "tools_1dgofcs_font_size", value = p$font_size)
+          if (!is.null(p$axis_text_size)) updateNumericInput(session, "tools_1dgofcs_axis_text_size", value = p$axis_text_size)
+          if (!is.null(p$width)) updateNumericInput(session, "tools_1dgofcs_width", value = p$width)
+          if (!is.null(p$height)) updateNumericInput(session, "tools_1dgofcs_height", value = p$height)
+          if (!is.null(genes)) updateTextAreaInput(session, "tools_1dgofcs_genes", value = genes)
+        })
+      }, once = TRUE)
+    }
+
+    # Restore 2D GO-FCS parameters
+    if (tool == "2dgofcs" && !is.null(rv_2dgofcs$stored_params)) {
+      p <- rv_2dgofcs$stored_params
+      genes <- rv_2dgofcs$stored_genes
+      x_label <- rv_2dgofcs$stored_x_label
+      y_label <- rv_2dgofcs$stored_y_label
+      observe({
+        req(input$tools_2dgofcs_fdr_cutoff)
+        isolate({
+          if (!is.null(p$fdr_cutoff)) updateNumericInput(session, "tools_2dgofcs_fdr_cutoff", value = p$fdr_cutoff)
+          if (!is.null(p$min_term_size)) updateNumericInput(session, "tools_2dgofcs_min_term_size", value = p$min_term_size)
+          if (!is.null(p$max_terms)) updateNumericInput(session, "tools_2dgofcs_max_terms", value = p$max_terms)
+          if (!is.null(p$ontology_view)) updateSelectInput(session, "tools_2dgofcs_ontology_view", selected = p$ontology_view)
+          if (!is.null(p$color_mode)) updateSelectInput(session, "tools_2dgofcs_color_mode", selected = p$color_mode)
+          if (!is.null(p$fdr_palette)) updateSelectInput(session, "tools_2dgofcs_fdr_palette", selected = p$fdr_palette)
+          if (!is.null(p$flat_color)) updateTextInput(session, "tools_2dgofcs_flat_color", value = p$flat_color)
+          if (!is.null(p$dot_alpha)) updateSliderInput(session, "tools_2dgofcs_dot_alpha", value = p$dot_alpha)
+          if (!is.null(p$show_ref_lines)) updateCheckboxInput(session, "tools_2dgofcs_show_ref_lines", value = p$show_ref_lines)
+          if (!is.null(p$show_diagonal_guides)) updateCheckboxInput(session, "tools_2dgofcs_show_diagonal_guides", value = p$show_diagonal_guides)
+          if (!is.null(p$label_font_size)) updateNumericInput(session, "tools_2dgofcs_label_font_size", value = p$label_font_size)
+          if (!is.null(p$axis_text_size)) updateNumericInput(session, "tools_2dgofcs_axis_text_size", value = p$axis_text_size)
+          if (!is.null(p$width)) updateNumericInput(session, "tools_2dgofcs_width", value = p$width)
+          if (!is.null(p$height)) updateNumericInput(session, "tools_2dgofcs_height", value = p$height)
+          if (!is.null(genes)) updateTextAreaInput(session, "tools_2dgofcs_genes", value = genes)
+          if (!is.null(x_label)) updateTextInput(session, "tools_2dgofcs_x_label", value = x_label)
+          if (!is.null(y_label)) updateTextInput(session, "tools_2dgofcs_y_label", value = y_label)
+        })
+      }, once = TRUE)
+    }
   }, ignoreInit = TRUE)
 
   # Handle TerpBase file upload for standalone GO-ORA

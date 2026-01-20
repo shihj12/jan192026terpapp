@@ -39,8 +39,8 @@ stats_heatmap_run <- function(payload, params = NULL, context = NULL) {
     if (length(genes) == 0) {
       stop("Heatmap: gene list is empty (paste one gene per line)")
     }
-    if (length(genes) > 200) {
-      stop(sprintf("Heatmap: gene list too large (%d). Maximum is 200 genes.", length(genes)))
+    if (length(genes) > 2000) {
+      stop(sprintf("Heatmap: gene list too large (%d). Maximum is 2000 genes.", length(genes)))
     }
     genes
   }

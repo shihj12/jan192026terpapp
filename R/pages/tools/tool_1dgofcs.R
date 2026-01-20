@@ -90,7 +90,11 @@ tools_1dgofcs_ui <- function() {
           rows = 10,
           placeholder = "TP53\t2.5\nEGFR\t-1.2\nBRCA1\t0.8"
         ),
-        actionButton("tools_1dgofcs_run", "Run 1D GO-FCS", class = "btn-primary btn-tool-action"),
+        div(
+          style = "display: flex; gap: 8px; margin-top: 5px;",
+          actionButton("tools_1dgofcs_run", "Run 1D GO-FCS", class = "btn-primary btn-tool-action"),
+          actionButton("tools_1dgofcs_reset", "Reset", class = "btn btn-default btn-tool-action")
+        ),
         hr(),
         tags$h4("View"),
         selectInput(
@@ -236,6 +240,26 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     if (!is.finite(v) || v <= 0) default else v
   }
 
+  # Reset button handler
+  observeEvent(input$tools_1dgofcs_reset, {
+    rv_1dgofcs$results <- NULL
+    rv_1dgofcs$rendered <- NULL
+    rv_1dgofcs$status_msg <- NULL
+    rv_1dgofcs$status_level <- NULL
+    rv_1dgofcs$input_count <- NULL
+    rv_1dgofcs$hidden_terms <- character()
+    rv_1dgofcs$term_labels <- list()
+    # Clear stored parameters so they don't get restored on navigation
+    rv_1dgofcs$stored_params <- NULL
+    rv_1dgofcs$stored_genes <- NULL
+
+    # Reset parameter inputs to defaults
+    updateNumericInput(session, "tools_1dgofcs_fdr_cutoff", value = defs_1dgofcs$params$fdr_cutoff %||% 0.03)
+    updateNumericInput(session, "tools_1dgofcs_min_term_size", value = defs_1dgofcs$params$min_term_size %||% 5)
+    updateNumericInput(session, "tools_1dgofcs_max_terms", value = defs_1dgofcs$params$max_terms %||% 20)
+    updateTextAreaInput(session, "tools_1dgofcs_genes", value = "")
+  }, ignoreInit = TRUE)
+
   # Parse gene input with scores for 1D GO-FCS
   parse_gene_score_input <- function(text) {
     if (is.null(text) || !nzchar(text)) return(list(genes = character(0), scores = numeric(0)))
@@ -356,11 +380,15 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
 
   # Run 1D GO-FCS
   observeEvent(input$tools_1dgofcs_run, {
+    # Only reset status and results, preserve parameters
     rv_1dgofcs$status_msg <- NULL
     rv_1dgofcs$status_level <- NULL
     rv_1dgofcs$results <- NULL
     rv_1dgofcs$rendered <- NULL
     rv_1dgofcs$input_count <- NULL
+    # Reset visibility state for new run
+    rv_1dgofcs$hidden_terms <- character()
+    rv_1dgofcs$term_labels <- list()
 
     tb <- app_state$terpbase
     if (is.null(tb)) {
@@ -604,26 +632,29 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     ar <- w_in / h_in
 
     tagList(
+      # Export buttons
+      div(
+        class = "tool-export-buttons",
+        actionButton("tools_1dgofcs_download_png", "Download PNG", class = "btn btn-sm btn-default", icon = icon("download")),
+        actionButton("tools_1dgofcs_download_pdf", "Download PDF", class = "btn btn-sm btn-default", icon = icon("file-pdf")),
+        actionButton("tools_1dgofcs_copy_plot", "Copy Plot", class = "btn btn-sm btn-default", icon = icon("copy")),
+        downloadButton("tools_1dgofcs_download_excel", "Download Excel", class = "btn btn-sm btn-default")
+      ),
       div(
         class = "tool-plot-box",
         style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
         plotOutput("tools_1dgofcs_plot", height = "100%")
       ),
-      DT::DTOutput("tools_1dgofcs_table")
+      div(
+        class = "tool-table-wrap",
+        uiOutput("tools_1dgofcs_table_ui")
+      )
     )
   })
 
-  # Reactive to re-render plot when plot options or ontology view changes
-  output$tools_1dgofcs_plot <- renderPlot({
-    res <- rv_1dgofcs$results
-    if (is.null(res)) {
-      plot.new()
-      text(0.5, 0.5, "No results yet.")
-      return(invisible(NULL))
-    }
-
-    # Build current style from inputs (reactive to plot option changes)
-    style <- list(
+  # Build current style from inputs (reactive helper)
+  current_1dgofcs_style <- reactive({
+    list(
       plot_type = input$tools_1dgofcs_plot_type %||% defs_1dgofcs$style$plot_type %||% "bar",
       color_mode = input$tools_1dgofcs_color_mode %||% defs_1dgofcs$style$color_mode %||% "fdr",
       fdr_palette = input$tools_1dgofcs_fdr_palette %||% defs_1dgofcs$style$fdr_palette %||% "yellow_cap",
@@ -639,23 +670,35 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
       width = safe_num(input$tools_1dgofcs_width, defs_1dgofcs$style$width %||% 14),
       height = safe_num(input$tools_1dgofcs_height, defs_1dgofcs$style$height %||% 6),
       flip_axis = isTRUE(input$tools_1dgofcs_flip_axis),
-      ontology_filter = input$tools_1dgofcs_ontology_view %||% "BP"  # Use view selector for filtering display
+      ontology_filter = input$tools_1dgofcs_ontology_view %||% "BP"
     )
+  })
 
-    # Re-render with current style
-    rend <- tb_render_1dgofcs(res, style, meta = NULL)
-    rv_1dgofcs$rendered <- rend
+  # Get current ggplot object for export
+  current_1dgofcs_plot <- reactive({
+    res <- rv_1dgofcs$results
+    if (is.null(res)) return(NULL)
 
-    # Get the plot for the selected ontology
+    style <- current_1dgofcs_style()
+    hidden_terms <- rv_1dgofcs$hidden_terms %||% character()
+    term_labels <- rv_1dgofcs$term_labels %||% list()
+
+    meta <- list(visibility = list(hidden_terms = hidden_terms, term_labels = term_labels))
+    rend <- tb_render_1dgofcs(res, style, meta = meta)
+
     ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
     plot_key <- paste0(ont, "_plot")
     p <- rend$plots[[plot_key]]
 
-    # Fallback to single plot if no tabs
     if (is.null(p) && length(rend$plots) > 0) {
       p <- rend$plots[[1]]
     }
+    p
+  })
 
+  # Reactive to re-render plot when plot options, ontology view, or visibility changes
+  output$tools_1dgofcs_plot <- renderPlot({
+    p <- current_1dgofcs_plot()
     if (is.null(p)) {
       plot.new()
       text(0.5, 0.5, "No enriched terms for this ontology.")
@@ -668,40 +711,230 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
   res = 150
   )
 
-  output$tools_1dgofcs_table <- DT::renderDT({
-    rend <- rv_1dgofcs$rendered
-    if (is.null(rend)) {
-      return(DT::datatable(data.frame()))
+  # Editable table UI with visibility checkboxes, term name editing, and search
+  output$tools_1dgofcs_table_ui <- renderUI({
+    res <- rv_1dgofcs$results
+    if (is.null(res)) {
+      return(tags$div(class = "text-muted", "No table data."))
     }
 
-    # Get the table for the selected ontology
     ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
+    style <- current_1dgofcs_style()
+    rend <- tb_render_1dgofcs(res, style, meta = NULL)
+
     table_key <- paste0(ont, "_table")
     df <- rend$tables[[table_key]]
-
-    # Fallback to single table if no tabs
     if (is.null(df) && length(rend$tables) > 0) {
       df <- rend$tables[[1]]
     }
 
     if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
-      return(DT::datatable(data.frame()))
+      return(tags$div(class = "text-muted", "No terms to display."))
     }
 
-    n_rows <- nrow(df)
-    DT::datatable(
-      df,
-      options = list(
-        pageLength = min(15, n_rows),
-        lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
-        scrollX = TRUE,
-        scrollY = "350px",
-        scrollCollapse = TRUE,
-        deferRender = TRUE,
-        searchDelay = 350,
-        autoWidth = FALSE
-      ),
-      rownames = FALSE
+    hidden_term_ids <- rv_1dgofcs$hidden_terms %||% character()
+    term_labels_by_id <- rv_1dgofcs$term_labels %||% list()
+
+    # Determine term_id and term_name columns
+    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+    term_name_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
+
+    if (is.null(term_id_col) || is.null(term_name_col)) {
+      return(tags$div(class = "text-muted", "Table missing required columns."))
+    }
+
+    # Get gene column for search button
+    gene_col <- intersect(c("genes", "geneID", "protein_ids", "core_enrichment", "Genes"), names(df))[1]
+    gene_col_data <- if (!is.na(gene_col)) df[[gene_col]] else NULL
+
+    # Build the editable table (matching result viewer exactly)
+    tools_go_editable_table_ui(
+      id_prefix = paste0("tools_1dgofcs_", ont),
+      df = df,
+      term_id_col = term_id_col,
+      term_name_col = term_name_col,
+      hidden_term_ids = hidden_term_ids,
+      term_labels_by_id = term_labels_by_id,
+      gene_col_data = gene_col_data
     )
   })
+
+  # Bind observers for visibility and term name changes (matching result viewer pattern)
+  observe({
+    res <- rv_1dgofcs$results
+    if (is.null(res)) return()
+
+    ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
+    style <- current_1dgofcs_style()
+    rend <- tb_render_1dgofcs(res, style, meta = NULL)
+
+    table_key <- paste0(ont, "_table")
+    df <- rend$tables[[table_key]]
+    if (is.null(df) && length(rend$tables) > 0) {
+      df <- rend$tables[[1]]
+    }
+    if (is.null(df) || !is.data.frame(df)) return()
+
+    # Determine term_id column
+    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+    if (is.null(term_id_col)) return()
+
+    # Bind observers using the same pattern as result viewer
+    tools_bind_editable_go_table(
+      id_prefix = paste0("tools_1dgofcs_", ont),
+      df = df,
+      term_id_col = term_id_col,
+      input = input,
+      session = session,
+      on_term_name_change = function(term_id, new_name) {
+        current_labels <- rv_1dgofcs$term_labels %||% list()
+        if (nzchar(new_name)) {
+          current_labels[[term_id]] <- new_name
+        } else {
+          current_labels[[term_id]] <- NULL
+        }
+        rv_1dgofcs$term_labels <- current_labels
+      },
+      on_visibility_change = function(term_id, is_visible) {
+        current_hidden <- rv_1dgofcs$hidden_terms %||% character()
+        if (is_visible) {
+          rv_1dgofcs$hidden_terms <- setdiff(current_hidden, term_id)
+        } else {
+          if (!(term_id %in% current_hidden)) {
+            rv_1dgofcs$hidden_terms <- c(current_hidden, term_id)
+          }
+        }
+      }
+    )
+  })
+
+  # Export: Download PNG
+  observeEvent(input$tools_1dgofcs_download_png, {
+    p <- current_1dgofcs_plot()
+    if (is.null(p)) {
+      showNotification("No plot to download.", type = "warning")
+      return()
+    }
+    showModal(modalDialog(
+      title = "Download PNG",
+      selectInput("tools_1dgofcs_png_dpi", "DPI", choices = c(150, 300, 600), selected = 300),
+      downloadButton("tools_1dgofcs_png_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_1dgofcs_png_cancel", "Cancel", class = "btn-secondary"),
+      footer = NULL,
+      easyClose = TRUE
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_1dgofcs_png_cancel, removeModal(), ignoreInit = TRUE)
+
+  output$tools_1dgofcs_png_confirm <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_1dgofcs_ontology_view %||% "BP"
+      paste0("1dgofcs_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    },
+    content = function(file) {
+      p <- current_1dgofcs_plot()
+      if (is.null(p)) return()
+      style <- current_1dgofcs_style()
+      dpi <- as.numeric(input$tools_1dgofcs_png_dpi %||% 300)
+      w <- style$width %||% 14
+      h <- style$height %||% 6
+      png_type <- if (capabilities("cairo")) "cairo-png" else NULL
+      ggplot2::ggsave(file, p, width = w, height = h, units = "in", dpi = dpi,
+                      device = grDevices::png, type = png_type)
+      removeModal()
+    }
+  )
+
+  # Export: Download PDF
+  observeEvent(input$tools_1dgofcs_download_pdf, {
+    p <- current_1dgofcs_plot()
+    if (is.null(p)) {
+      showNotification("No plot to download.", type = "warning")
+      return()
+    }
+    showModal(modalDialog(
+      title = "Download PDF",
+      downloadButton("tools_1dgofcs_pdf_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_1dgofcs_pdf_cancel", "Cancel", class = "btn-secondary"),
+      footer = NULL,
+      easyClose = TRUE
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_1dgofcs_pdf_cancel, removeModal(), ignoreInit = TRUE)
+
+  output$tools_1dgofcs_pdf_confirm <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_1dgofcs_ontology_view %||% "BP"
+      paste0("1dgofcs_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+    },
+    content = function(file) {
+      p <- current_1dgofcs_plot()
+      if (is.null(p)) return()
+      style <- current_1dgofcs_style()
+      w <- style$width %||% 14
+      h <- style$height %||% 6
+      pdf_device <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+      ggplot2::ggsave(file, p, width = w, height = h, units = "in", device = pdf_device)
+      removeModal()
+    }
+  )
+
+  # Export: Copy Plot
+  observeEvent(input$tools_1dgofcs_copy_plot, {
+    session$sendCustomMessage("tools_copy_plot", list(id = "tools_1dgofcs_plot"))
+  }, ignoreInit = TRUE)
+
+  # Export: Download Excel
+  output$tools_1dgofcs_download_excel <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_1dgofcs_ontology_view %||% "BP"
+      paste0("1dgofcs_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
+    },
+    content = function(file) {
+      res <- rv_1dgofcs$results
+      if (is.null(res)) {
+        writeLines("No results to export.", file)
+        return()
+      }
+
+      ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
+      style <- current_1dgofcs_style()
+      rend <- tb_render_1dgofcs(res, style, meta = NULL)
+
+      table_key <- paste0(ont, "_table")
+      df <- rend$tables[[table_key]]
+      if (is.null(df) && length(rend$tables) > 0) {
+        df <- rend$tables[[1]]
+      }
+
+      if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+        writeLines("No data to export.", file)
+        return()
+      }
+
+      term_labels <- rv_1dgofcs$term_labels %||% list()
+      term_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
+      term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+
+      if (!is.null(term_col) && !is.null(term_id_col) && length(term_labels) > 0) {
+        for (i in seq_len(nrow(df))) {
+          tid <- as.character(df[[term_id_col]][i])
+          if (!is.null(term_labels[[tid]]) && nzchar(term_labels[[tid]])) {
+            df[[term_col]][i] <- term_labels[[tid]]
+          }
+        }
+      }
+
+      if (requireNamespace("openxlsx", quietly = TRUE)) {
+        wb <- openxlsx::createWorkbook()
+        openxlsx::addWorksheet(wb, "1D GO-FCS Results")
+        openxlsx::writeData(wb, "1D GO-FCS Results", df)
+        openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      } else {
+        utils::write.csv(df, file, row.names = FALSE)
+      }
+    }
+  )
 }

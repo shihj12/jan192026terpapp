@@ -47,6 +47,190 @@ tools_ensure_terpbase_go_mappings <- function(tb) {
   tb
 }
 
+# Safe input ID generator (matches res_safe_input_id from page_results.R)
+tools_safe_input_id <- function(x) {
+  x <- as.character(x %||% "")
+  x <- gsub("[^A-Za-z0-9_]", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_+", "", x)
+  if (!nzchar(x) || grepl("^[0-9]", x)) x <- paste0("id_", x)
+  x
+}
+
+# Helper function to create editable GO table UI for tools page
+# Matches res_editable_go_table_ui from page_results.R exactly
+tools_go_editable_table_ui <- function(
+    id_prefix,
+    df,
+    term_id_col = "term_id",
+    term_name_col = "term_name",
+    hidden_term_ids = character(),
+    term_labels_by_id = list(),
+    gene_col_data = NULL
+) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(div(class = "text-muted", "No terms to display."))
+  }
+  if (!(term_id_col %in% names(df)) || !(term_name_col %in% names(df))) {
+    return(div(class = "text-danger", "Table is missing required columns for editing."))
+  }
+
+  term_ids <- as.character(df[[term_id_col]])
+  cols <- names(df)
+
+  # Columns to hide from display (but still available in data)
+  hide_cols <- c("genes", "gene_ids", "geneID", "protein_ids", "core_enrichment", "Genes",
+                 "neglog10_fdr", "neglog10fdr", "n_term", "ontology", "score")
+
+  # Build header: Visible, term_id, term_name, Search, then other columns
+  other_cols <- setdiff(cols, c(term_id_col, term_name_col, hide_cols))
+  has_search <- !is.null(gene_col_data) && length(gene_col_data) == nrow(df)
+  header_cols <- c("Visible", term_id_col, term_name_col, if (has_search) "Search" else NULL, other_cols)
+
+  rows <- lapply(seq_len(nrow(df)), function(i) {
+    term_id <- as.character(term_ids[[i]] %||% "")
+    safe_term_id <- tools_safe_input_id(term_id)
+
+    vis_id <- paste0(id_prefix, "_vis_", safe_term_id)
+    name_id <- paste0(id_prefix, "_name_", safe_term_id)
+
+    default_name <- as.character(df[[term_name_col]][[i]] %||% "")
+    display_name <- as.character(term_labels_by_id[[term_id]] %||% default_name)
+
+    visible <- !(term_id %in% hidden_term_ids)
+
+    # Build Search button HTML if gene data available
+    search_btn <- NULL
+    if (has_search) {
+      genes <- as.character(gene_col_data[[i]] %||% "")
+      genes_clean <- gsub("[,;|/]", "\n", genes)
+      genes_clean <- gsub("\n+", "\n", genes_clean)
+      genes_clean <- trimws(genes_clean)
+      safe_term <- gsub("'", "&#39;", gsub('"', "&quot;", gsub("<", "&lt;", gsub(">", "&gt;", gsub("&", "&amp;", display_name)))))
+      safe_genes <- gsub("'", "&#39;", gsub('"', "&quot;", gsub("<", "&lt;", gsub(">", "&gt;", gsub("&", "&amp;", genes_clean)))))
+      search_btn <- tags$td(
+        style = "text-align: center;",
+        HTML(sprintf(
+          '<button type="button" class="btn btn-xs btn-info go-search-genes-btn" data-term="%s" data-genes="%s" title="Search genes in UniProt"><i class="fa fa-search"></i></button>',
+          safe_term, safe_genes
+        ))
+      )
+    }
+
+    tags$tr(
+      tags$td(
+        style = "width: 40px; text-align: center;",
+        tags$div(
+          style = "display: inline-block;",
+          checkboxInput(vis_id, label = NULL, value = visible, width = "20px")
+        )
+      ),
+      tags$td(tags$code(term_id)),
+      tags$td(
+        style = "min-width: 200px;",
+        textInput(
+          name_id,
+          label = NULL,
+          value = display_name,
+          width = "100%"
+        )
+      ),
+      search_btn,
+      lapply(other_cols, function(col) {
+        val <- df[[col]][[i]]
+        # Format numeric values
+        if (is.numeric(val)) {
+          if (col %in% c("fdr", "FDR", "p.adjust", "pvalue")) {
+            val <- format(val, scientific = TRUE, digits = 2)
+          } else {
+            val <- format(val, digits = 3, nsmall = 2)
+          }
+        }
+        tags$td(htmltools::htmlEscape(as.character(val %||% "")))
+      })
+    )
+  })
+
+  div(
+    class = "tools-editable-go-table",
+    # Add CSS to constrain checkbox width
+    tags$style(HTML("
+      .tools-editable-go-table .form-group { margin-bottom: 0; }
+      .tools-editable-go-table .checkbox { margin: 0; padding: 0; min-height: 0; }
+      .tools-editable-go-table input[type='checkbox'] { margin: 0; }
+    ")),
+    tags$div(style = "overflow-x: auto; max-height: 400px; overflow-y: auto;",
+             tags$table(
+               class = "table table-sm table-striped",
+               tags$thead(tags$tr(lapply(header_cols, function(h) {
+                 if (h == "Visible") {
+                   tags$th(style = "width: 50px; text-align: center;", h)
+                 } else if (h == "Search") {
+                   tags$th(style = "width: 50px; text-align: center;", h)
+                 } else if (h == term_name_col) {
+                   tags$th(style = "min-width: 200px;", h)
+                 } else {
+                   tags$th(h)
+                 }
+               }))),
+               tags$tbody(rows)
+             ))
+  )
+}
+
+# Bind observers for editable GO table (matches res_bind_editable_go_table)
+tools_bind_editable_go_table <- function(
+    id_prefix,
+    df,
+    term_id_col = "term_id",
+    input,
+    session,
+    on_term_name_change = NULL,
+    on_visibility_change = NULL
+) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(invisible(NULL))
+  if (!(term_id_col %in% names(df))) return(invisible(NULL))
+
+  if (is.null(session$userData$tools_editable_go_table_bound)) {
+    session$userData$tools_editable_go_table_bound <- new.env(parent = emptyenv())
+  }
+  bound <- session$userData$tools_editable_go_table_bound
+
+  term_ids <- unique(as.character(df[[term_id_col]]))
+  term_ids <- term_ids[nzchar(term_ids)]
+
+  for (term_id in term_ids) {
+    local({
+      term_id_local <- term_id
+      safe_term_id <- tools_safe_input_id(term_id_local)
+      vis_id <- paste0(id_prefix, "_vis_", safe_term_id)
+      name_id <- paste0(id_prefix, "_name_", safe_term_id)
+
+      vis_key <- paste0("vis|", vis_id)
+      if (!exists(vis_key, envir = bound, inherits = FALSE)) {
+        assign(vis_key, TRUE, envir = bound)
+        observeEvent(input[[vis_id]], {
+          if (is.function(on_visibility_change)) {
+            on_visibility_change(term_id_local, isTRUE(input[[vis_id]]))
+          }
+        }, ignoreInit = TRUE)
+      }
+
+      name_key <- paste0("name|", name_id)
+      if (!exists(name_key, envir = bound, inherits = FALSE)) {
+        assign(name_key, TRUE, envir = bound)
+        observeEvent(input[[name_id]], {
+          if (is.function(on_term_name_change)) {
+            on_term_name_change(term_id_local, as.character(input[[name_id]] %||% ""))
+          }
+        }, ignoreInit = TRUE)
+      }
+    })
+  }
+
+  invisible(NULL)
+}
+
 # ============================================================
 # GO-ORA Tool UI
 # ============================================================
@@ -56,6 +240,117 @@ tools_goora_ui <- function() {
   style_defaults <- defs$style %||% list()
 
   tagList(
+    # JavaScript handlers for UniProt search and copy plot
+    tags$head(
+      tags$script(HTML("
+        // UniProt gene search button handler for tools page
+        if (window.Shiny && !window.__tools_go_search_genes) {
+          window.__tools_go_search_genes = true;
+          $(document).on('click', '.go-search-genes-btn', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var btn = e.target.closest('.go-search-genes-btn');
+            if (!btn) return;
+            var term = btn.getAttribute('data-term') || '';
+            var genes = btn.getAttribute('data-genes') || '';
+            if (!genes) return;
+            // Send to Shiny for UniProt lookup
+            Shiny.setInputValue('tools_go_search_genes_click', {
+              term: term,
+              genes: genes,
+              ts: Date.now()
+            });
+          });
+        }
+      ")),
+      tags$script(HTML("
+        // Open URL in new tab handler
+        Shiny.addCustomMessageHandler('tools_open_url', function(payload) {
+          if (payload && payload.url) {
+            window.open(payload.url, '_blank');
+          }
+        });
+      ")),
+      tags$script(HTML("
+        // Copy plot handler for tools page
+        Shiny.addCustomMessageHandler('tools_copy_plot', function(payload) {
+          var plotId = payload && payload.id ? payload.id : null;
+          if (!plotId) return;
+
+          var container = document.getElementById(plotId);
+          var img = container ? container.querySelector('img') : null;
+
+          function showNotification(msg, type) {
+            Shiny.notifications.show({
+              html: '<span>' + msg + '</span>',
+              type: type,
+              duration: 3000
+            });
+          }
+
+          if (!img || !img.src) {
+            showNotification('Plot not ready yet. Try again.', 'error');
+            return;
+          }
+
+          if (!navigator.clipboard || !window.ClipboardItem) {
+            showNotification('Clipboard API not available in this browser.', 'error');
+            return;
+          }
+
+          fetch(img.src)
+            .then(function(res) { return res.blob(); })
+            .then(function(blob) {
+              var item = new ClipboardItem({ [blob.type]: blob });
+              return navigator.clipboard.write([item]);
+            })
+            .then(function() {
+              var w = img.naturalWidth || 0;
+              var h = img.naturalHeight || 0;
+              var label = (w && h) ? ('Copied plot (' + w + ' x ' + h + ' px).') : 'Copied plot to clipboard.';
+              showNotification(label, 'message');
+            })
+            .catch(function(err) {
+              showNotification('Copy failed. Check browser permissions.', 'error');
+              if (window.console && console.error) console.error(err);
+            });
+        });
+      ")),
+      tags$style(HTML("
+        .go-search-genes-btn {
+          padding: 2px 6px;
+          font-size: 11px;
+          cursor: pointer;
+        }
+        .tool-export-buttons {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin: 10px 0;
+        }
+        .tool-export-buttons .btn {
+          font-size: 12px;
+        }
+        .tool-table-wrap {
+          margin-top: 15px;
+        }
+        .tool-table-wrap .form-group {
+          margin-bottom: 0;
+        }
+        .tool-table-wrap input[type='checkbox'] {
+          margin: 0;
+        }
+        .tool-table-wrap input[type='text'] {
+          padding: 2px 6px;
+          font-size: 12px;
+          height: auto;
+        }
+        .go-term-hidden-row {
+          opacity: 0.5;
+          background-color: #f5f5f5 !important;
+        }
+      "))
+    ),
     div(
       class = "top",
       actionButton("tools_goora_back", "Back to Tools", class = "btn btn-default"),
@@ -91,7 +386,11 @@ tools_goora_ui <- function() {
           rows = 10,
           placeholder = "TP53\nEGFR\nBRCA1"
         ),
-        actionButton("tools_goora_run", "Run GO-ORA", class = "btn-primary btn-tool-action"),
+        div(
+          style = "display: flex; gap: 8px; margin-top: 5px;",
+          actionButton("tools_goora_run", "Run GO-ORA", class = "btn-primary btn-tool-action"),
+          actionButton("tools_goora_reset", "Reset", class = "btn btn-default btn-tool-action")
+        ),
         hr(),
         tags$h4("View"),
         selectInput(
@@ -269,6 +568,50 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     )
   }
 
+  # Reset button handler - clears results and resets parameters
+  observeEvent(input$tools_goora_reset, {
+    rv$results <- NULL
+    rv$rendered <- NULL
+    rv$status_msg <- NULL
+    rv$status_level <- NULL
+    rv$input_count <- NULL
+    rv$hidden_terms <- character()
+    rv$term_labels <- list()
+    # Clear stored parameters so they don't get restored on navigation
+    rv$stored_params <- NULL
+    rv$stored_genes <- NULL
+
+    # Reset parameter inputs to defaults
+    updateNumericInput(session, "tools_goora_fdr_cutoff", value = defs_goora$params$fdr_cutoff %||% 0.03)
+    updateNumericInput(session, "tools_goora_min_term_size", value = defs_goora$params$min_term_size %||% 5)
+    updateNumericInput(session, "tools_goora_min_overlap", value = defs_goora$params$min_overlap %||% 1)
+    updateNumericInput(session, "tools_goora_max_terms", value = defs_goora$params$max_terms %||% 20)
+    updateTextAreaInput(session, "tools_goora_genes", value = "")
+  }, ignoreInit = TRUE)
+
+  # Handle UniProt gene search button clicks
+  observeEvent(input$tools_go_search_genes_click, {
+    req(input$tools_go_search_genes_click)
+    genes <- input$tools_go_search_genes_click$genes
+    term <- input$tools_go_search_genes_click$term
+
+    if (!nzchar(genes)) return()
+
+    # Split genes and build UniProt search URL
+    gene_list <- unlist(strsplit(genes, "\n"))
+    gene_list <- trimws(gene_list)
+    gene_list <- gene_list[nzchar(gene_list)]
+
+    if (length(gene_list) == 0) return()
+
+    # Open UniProt search in new tab
+    query <- paste(gene_list, collapse = " OR ")
+    url <- paste0("https://www.uniprot.org/uniprotkb?query=", utils::URLencode(query, reserved = TRUE))
+
+    # Use JavaScript to open URL
+    session$sendCustomMessage("tools_open_url", list(url = url))
+  }, ignoreInit = TRUE)
+
   output$tools_goora_terpbase_status <- renderUI({
     tb <- app_state$terpbase
     if (is.null(tb)) {
@@ -341,11 +684,15 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   })
 
   observeEvent(input$tools_goora_run, {
+    # Only reset status and results, preserve parameters
     rv$status_msg <- NULL
     rv$status_level <- NULL
     rv$results <- NULL
     rv$rendered <- NULL
     rv$input_count <- NULL
+    # Reset visibility state for new run
+    rv$hidden_terms <- character()
+    rv$term_labels <- list()
 
     tb <- app_state$terpbase
     if (is.null(tb)) {
@@ -590,26 +937,29 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     ar <- w_in / h_in
 
     tagList(
+      # Export buttons
+      div(
+        class = "tool-export-buttons",
+        actionButton("tools_goora_download_png", "Download PNG", class = "btn btn-sm btn-default", icon = icon("download")),
+        actionButton("tools_goora_download_pdf", "Download PDF", class = "btn btn-sm btn-default", icon = icon("file-pdf")),
+        actionButton("tools_goora_copy_plot", "Copy Plot", class = "btn btn-sm btn-default", icon = icon("copy")),
+        downloadButton("tools_goora_download_excel", "Download Excel", class = "btn btn-sm btn-default")
+      ),
       div(
         class = "tool-plot-box",
         style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
         plotOutput("tools_goora_plot", height = "100%")
       ),
-      DT::DTOutput("tools_goora_table")
+      div(
+        class = "tool-table-wrap",
+        uiOutput("tools_goora_table_ui")
+      )
     )
   })
 
-  # Reactive to re-render plot when plot options or ontology view changes
-  output$tools_goora_plot <- renderPlot({
-    res <- rv$results
-    if (is.null(res)) {
-      plot.new()
-      text(0.5, 0.5, "No results yet.")
-      return(invisible(NULL))
-    }
-
-    # Build current style from inputs (reactive to plot option changes)
-    style <- list(
+  # Build current style from inputs (reactive helper)
+  current_goora_style <- reactive({
+    list(
       plot_type = input$tools_goora_plot_type %||% defs_goora$style$plot_type %||% "bar",
       color_mode = input$tools_goora_color_mode %||% defs_goora$style$color_mode %||% "fdr",
       fdr_palette = input$tools_goora_fdr_palette %||% defs_goora$style$fdr_palette %||% "yellow_cap",
@@ -625,23 +975,36 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
       width = safe_num(input$tools_goora_width, defs_goora$style$width %||% 12),
       height = safe_num(input$tools_goora_height, defs_goora$style$height %||% 6),
       flip_axis = isTRUE(input$tools_goora_flip_axis),
-      ontology_filter = input$tools_goora_ontology_view %||% "BP"  # Use view selector for filtering display
+      ontology_filter = input$tools_goora_ontology_view %||% "BP"
     )
+  })
 
-    # Re-render with current style
-    rend <- tb_render_goora(res, style, meta = NULL)
-    rv$rendered <- rend
+  # Get current ggplot object for export
+  current_goora_plot <- reactive({
+    res <- rv$results
+    if (is.null(res)) return(NULL)
 
-    # Get the plot for the selected ontology
+    style <- current_goora_style()
+    hidden_terms <- rv$hidden_terms %||% character()
+    term_labels <- rv$term_labels %||% list()
+
+    # Build meta with visibility info
+    meta <- list(visibility = list(hidden_terms = hidden_terms, term_labels = term_labels))
+    rend <- tb_render_goora(res, style, meta = meta)
+
     ont <- tolower(input$tools_goora_ontology_view %||% "BP")
     plot_key <- paste0(ont, "_plot")
     p <- rend$plots[[plot_key]]
 
-    # Fallback to single plot if no tabs
     if (is.null(p) && length(rend$plots) > 0) {
       p <- rend$plots[[1]]
     }
+    p
+  })
 
+  # Reactive to re-render plot when plot options, ontology view, or visibility changes
+  output$tools_goora_plot <- renderPlot({
+    p <- current_goora_plot()
     if (is.null(p)) {
       plot.new()
       text(0.5, 0.5, "No enriched terms for this ontology.")
@@ -654,40 +1017,231 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   res = 150
   )
 
-  output$tools_goora_table <- DT::renderDT({
-    rend <- rv$rendered
-    if (is.null(rend)) {
-      return(DT::datatable(data.frame()))
+  # Editable table UI with visibility checkboxes, term name editing, and search
+  output$tools_goora_table_ui <- renderUI({
+    res <- rv$results
+    if (is.null(res)) {
+      return(tags$div(class = "text-muted", "No table data."))
     }
 
-    # Get the table for the selected ontology
     ont <- tolower(input$tools_goora_ontology_view %||% "BP")
+    style <- current_goora_style()
+    rend <- tb_render_goora(res, style, meta = NULL)
+
     table_key <- paste0(ont, "_table")
     df <- rend$tables[[table_key]]
-
-    # Fallback to single table if no tabs
     if (is.null(df) && length(rend$tables) > 0) {
       df <- rend$tables[[1]]
     }
 
     if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
-      return(DT::datatable(data.frame()))
+      return(tags$div(class = "text-muted", "No terms to display."))
     }
 
-    n_rows <- nrow(df)
-    DT::datatable(
-      df,
-      options = list(
-        pageLength = min(15, n_rows),
-        lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
-        scrollX = TRUE,
-        scrollY = "350px",
-        scrollCollapse = TRUE,
-        deferRender = TRUE,
-        searchDelay = 350,
-        autoWidth = FALSE
-      ),
-      rownames = FALSE
+    hidden_term_ids <- rv$hidden_terms %||% character()
+    term_labels_by_id <- rv$term_labels %||% list()
+
+    # Determine term_id and term_name columns
+    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+    term_name_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
+
+    if (is.null(term_id_col) || is.null(term_name_col)) {
+      return(tags$div(class = "text-muted", "Table missing required columns."))
+    }
+
+    # Get gene column for search button
+    gene_col <- intersect(c("genes", "geneID", "protein_ids", "core_enrichment", "Genes"), names(df))[1]
+    gene_col_data <- if (!is.na(gene_col)) df[[gene_col]] else NULL
+
+    # Build the editable table (matching result viewer exactly)
+    tools_go_editable_table_ui(
+      id_prefix = paste0("tools_goora_", ont),
+      df = df,
+      term_id_col = term_id_col,
+      term_name_col = term_name_col,
+      hidden_term_ids = hidden_term_ids,
+      term_labels_by_id = term_labels_by_id,
+      gene_col_data = gene_col_data
     )
   })
+
+  # Bind observers for visibility and term name changes (matching result viewer pattern)
+  observe({
+    res <- rv$results
+    if (is.null(res)) return()
+
+    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
+    style <- current_goora_style()
+    rend <- tb_render_goora(res, style, meta = NULL)
+
+    table_key <- paste0(ont, "_table")
+    df <- rend$tables[[table_key]]
+    if (is.null(df) && length(rend$tables) > 0) {
+      df <- rend$tables[[1]]
+    }
+    if (is.null(df) || !is.data.frame(df)) return()
+
+    # Determine term_id column
+    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+    if (is.null(term_id_col)) return()
+
+    # Bind observers using the same pattern as result viewer
+    tools_bind_editable_go_table(
+      id_prefix = paste0("tools_goora_", ont),
+      df = df,
+      term_id_col = term_id_col,
+      input = input,
+      session = session,
+      on_term_name_change = function(term_id, new_name) {
+        current_labels <- rv$term_labels %||% list()
+        if (nzchar(new_name)) {
+          current_labels[[term_id]] <- new_name
+        } else {
+          current_labels[[term_id]] <- NULL
+        }
+        rv$term_labels <- current_labels
+      },
+      on_visibility_change = function(term_id, is_visible) {
+        current_hidden <- rv$hidden_terms %||% character()
+        if (is_visible) {
+          rv$hidden_terms <- setdiff(current_hidden, term_id)
+        } else {
+          if (!(term_id %in% current_hidden)) {
+            rv$hidden_terms <- c(current_hidden, term_id)
+          }
+        }
+      }
+    )
+  })
+
+  # Export: Download PNG
+  observeEvent(input$tools_goora_download_png, {
+    p <- current_goora_plot()
+    if (is.null(p)) {
+      showNotification("No plot to download.", type = "warning")
+      return()
+    }
+    showModal(modalDialog(
+      title = "Download PNG",
+      selectInput("tools_goora_png_dpi", "DPI", choices = c(150, 300, 600), selected = 300),
+      downloadButton("tools_goora_png_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_goora_png_cancel", "Cancel", class = "btn-secondary"),
+      footer = NULL,
+      easyClose = TRUE
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_goora_png_cancel, removeModal(), ignoreInit = TRUE)
+
+  output$tools_goora_png_confirm <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_goora_ontology_view %||% "BP"
+      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    },
+    content = function(file) {
+      p <- current_goora_plot()
+      if (is.null(p)) return()
+      style <- current_goora_style()
+      dpi <- as.numeric(input$tools_goora_png_dpi %||% 300)
+      w <- style$width %||% 12
+      h <- style$height %||% 6
+      png_type <- if (capabilities("cairo")) "cairo-png" else NULL
+      ggplot2::ggsave(file, p, width = w, height = h, units = "in", dpi = dpi,
+                      device = grDevices::png, type = png_type)
+      removeModal()
+    }
+  )
+
+  # Export: Download PDF
+  observeEvent(input$tools_goora_download_pdf, {
+    p <- current_goora_plot()
+    if (is.null(p)) {
+      showNotification("No plot to download.", type = "warning")
+      return()
+    }
+    showModal(modalDialog(
+      title = "Download PDF",
+      downloadButton("tools_goora_pdf_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_goora_pdf_cancel", "Cancel", class = "btn-secondary"),
+      footer = NULL,
+      easyClose = TRUE
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_goora_pdf_cancel, removeModal(), ignoreInit = TRUE)
+
+  output$tools_goora_pdf_confirm <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_goora_ontology_view %||% "BP"
+      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+    },
+    content = function(file) {
+      p <- current_goora_plot()
+      if (is.null(p)) return()
+      style <- current_goora_style()
+      w <- style$width %||% 12
+      h <- style$height %||% 6
+      pdf_device <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+      ggplot2::ggsave(file, p, width = w, height = h, units = "in", device = pdf_device)
+      removeModal()
+    }
+  )
+
+  # Export: Copy Plot
+  observeEvent(input$tools_goora_copy_plot, {
+    session$sendCustomMessage("tools_copy_plot", list(id = "tools_goora_plot"))
+  }, ignoreInit = TRUE)
+
+  # Export: Download Excel
+  output$tools_goora_download_excel <- downloadHandler(
+    filename = function() {
+      ont <- input$tools_goora_ontology_view %||% "BP"
+      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
+    },
+    content = function(file) {
+      res <- rv$results
+      if (is.null(res)) {
+        writeLines("No results to export.", file)
+        return()
+      }
+
+      ont <- tolower(input$tools_goora_ontology_view %||% "BP")
+      style <- current_goora_style()
+      rend <- tb_render_goora(res, style, meta = NULL)
+
+      table_key <- paste0(ont, "_table")
+      df <- rend$tables[[table_key]]
+      if (is.null(df) && length(rend$tables) > 0) {
+        df <- rend$tables[[1]]
+      }
+
+      if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+        writeLines("No data to export.", file)
+        return()
+      }
+
+      # Apply term labels for export
+      term_labels <- rv$term_labels %||% list()
+      term_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
+      term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+
+      if (!is.null(term_col) && !is.null(term_id_col) && length(term_labels) > 0) {
+        for (i in seq_len(nrow(df))) {
+          tid <- as.character(df[[term_id_col]][i])
+          if (!is.null(term_labels[[tid]]) && nzchar(term_labels[[tid]])) {
+            df[[term_col]][i] <- term_labels[[tid]]
+          }
+        }
+      }
+
+      if (requireNamespace("openxlsx", quietly = TRUE)) {
+        wb <- openxlsx::createWorkbook()
+        openxlsx::addWorksheet(wb, "GO-ORA Results")
+        openxlsx::writeData(wb, "GO-ORA Results", df)
+        openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      } else {
+        utils::write.csv(df, file, row.names = FALSE)
+      }
+    }
+  )
 }

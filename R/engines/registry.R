@@ -1296,7 +1296,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
         msterp_schema_field(
           "gene_list", "string", "Gene list (one per line)",
           default = "",
-          help = "Paste gene symbols/IDs, one per line (max 200). Unmatched genes are silently skipped."
+          help = "Paste gene symbols/IDs, one per line (max 2000). Unmatched genes are silently skipped."
         ),
         msterp_schema_field(
           "log_transform", "choice", "Log transform",
