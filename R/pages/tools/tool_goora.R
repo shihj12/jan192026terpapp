@@ -93,13 +93,13 @@ tools_goora_ui <- function() {
         ),
         actionButton("tools_goora_run", "Run GO-ORA", class = "btn-primary btn-tool-action"),
         hr(),
-        tags$h4("Filter"),
+        tags$h4("View"),
         selectInput(
-          "tools_goora_ontology_filter",
+          "tools_goora_ontology_view",
           "Ontology",
-          choices = c("All" = "all", "Biological Process" = "BP",
+          choices = c("Biological Process" = "BP",
                       "Molecular Function" = "MF", "Cellular Component" = "CC"),
-          selected = "all"
+          selected = "BP"
         ),
         tools_collapse_section_ui(
           "tools_goora_params_section",
@@ -389,7 +389,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
       width = safe_num(input$tools_goora_width, defs_goora$style$width %||% 12),
       height = safe_num(input$tools_goora_height, defs_goora$style$height %||% 6),
       flip_axis = isTRUE(input$tools_goora_flip_axis),
-      ontology_filter = input$tools_goora_ontology_filter %||% "all"
+      ontology_filter = "all"  # Always compute all ontologies
     )
 
     rv$pending_style <- style
@@ -407,13 +407,24 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
       rv$bg_process <- callr::r_bg(
         func = function(app_root, tb, genes, params, progress_path) {
-          source(file.path(app_root, "R/engines/stats_go.R"), local = TRUE)
-          source(file.path(app_root, "R/utils/utils.R"), local = TRUE)
+          # Set working directory (critical for file paths to resolve correctly)
+          setwd(app_root)
 
           write_prog <- function(msg, pct) {
             obj <- list(status = "running", message = msg, pct = pct)
             tryCatch(jsonlite::write_json(obj, progress_path, auto_unbox = TRUE), error = function(e) NULL)
           }
+
+          write_prog("Loading engine code...", 5)
+
+          # Source all required files (same pattern as new_run page)
+          source(file.path(app_root, "R", "00_init.R"), local = FALSE)
+          engine_files <- list.files(file.path(app_root, "R", "engines"), pattern = "\\.R$", full.names = TRUE)
+          for (f in engine_files) source(f, local = FALSE)
+          stats_files <- list.files(file.path(app_root, "R", "engines", "stats"), pattern = "\\.R$", full.names = TRUE)
+          for (f in stats_files) source(f, local = FALSE)
+          utils_files <- list.files(file.path(app_root, "R", "utils"), pattern = "\\.R$", full.names = TRUE)
+          for (f in utils_files) source(f, local = FALSE)
 
           write_prog("Preparing GO mappings...", 10)
 
@@ -568,8 +579,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   })
 
   output$tools_goora_tabs <- renderUI({
-    rend <- rv$rendered
-    if (is.null(rend)) {
+    res <- rv$results
+    if (is.null(res)) {
       return(tags$div(class = "text-muted", "No GO-ORA results yet."))
     }
 
@@ -578,106 +589,105 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     h_in <- safe_num(input$tools_goora_height, defs_goora$style$height %||% 6)
     ar <- w_in / h_in
 
-    tabs <- rend$tabs %||% character(0)
-    if (length(tabs) > 0) {
-      tab_panels <- lapply(tabs, function(tab) {
-        plot_id <- paste0("tools_goora_plot_", tolower(tab))
-        table_id <- paste0("tools_goora_table_", tolower(tab))
-        tabPanel(
-          tab,
-          div(
-            class = "tool-plot-box",
-            style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
-            plotOutput(plot_id, height = "100%")
-          ),
-          DT::DTOutput(table_id)
-        )
-      })
-      do.call(tabsetPanel, tab_panels)
-    } else {
-      tagList(
-        div(
-          class = "tool-plot-box",
-          style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
-          plotOutput("tools_goora_plot", height = "100%")
-        ),
-        DT::DTOutput("tools_goora_table")
-      )
-    }
+    tagList(
+      div(
+        class = "tool-plot-box",
+        style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
+        plotOutput("tools_goora_plot", height = "100%")
+      ),
+      DT::DTOutput("tools_goora_table")
+    )
   })
 
-  observeEvent(rv$rendered, {
-    rend <- rv$rendered
-    if (is.null(rend)) return(invisible(NULL))
-
-    render_plot <- function(plot_key) {
-      p <- rend$plots[[plot_key]]
-      if (is.null(p)) {
-        plot.new()
-        text(0.5, 0.5, "No plot available.")
-        return(invisible(NULL))
-      }
-      suppressMessages(print(p))
+  # Reactive to re-render plot when plot options or ontology view changes
+  output$tools_goora_plot <- renderPlot({
+    res <- rv$results
+    if (is.null(res)) {
+      plot.new()
+      text(0.5, 0.5, "No results yet.")
+      return(invisible(NULL))
     }
 
-    render_table <- function(table_key) {
-      df <- rend$tables[[table_key]]
-      if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
-        return(DT::datatable(data.frame()))
-      }
-      n_rows <- nrow(df)
-      DT::datatable(
-        df,
-        options = list(
-          pageLength = min(15, n_rows),
-          lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
-          scrollX = TRUE,
-          scrollY = "350px",
-          scrollCollapse = TRUE,
-          deferRender = TRUE,
-          searchDelay = 350,
-          autoWidth = FALSE
-        ),
-        rownames = FALSE
-      )
-    }
-
-    tabs <- rend$tabs %||% character(0)
-    if (length(tabs) > 0) {
-      for (tab in tabs) {
-        plot_key <- paste0(tolower(tab), "_plot")
-        table_key <- paste0(tolower(tab), "_table")
-        plot_id <- paste0("tools_goora_plot_", tolower(tab))
-        table_id <- paste0("tools_goora_table_", tolower(tab))
-
-        local({
-          pk <- plot_key
-          tk <- table_key
-          pid <- plot_id
-          tid <- table_id
-          output[[pid]] <- renderPlot({
-            render_plot(pk)
-          },
-          width = function() plot_dims_px()$w,
-          height = function() plot_dims_px()$h,
-          res = 150
-          )
-          output[[tid]] <- DT::renderDT({
-            render_table(tk)
-          })
-        })
-      }
-    } else {
-      output$tools_goora_plot <- renderPlot({
-        render_plot("goora_plot")
+    # Build current style from inputs (reactive to plot option changes)
+    style <- list(
+      plot_type = input$tools_goora_plot_type %||% defs_goora$style$plot_type %||% "bar",
+      color_mode = input$tools_goora_color_mode %||% defs_goora$style$color_mode %||% "fdr",
+      fdr_palette = input$tools_goora_fdr_palette %||% defs_goora$style$fdr_palette %||% "yellow_cap",
+      flat_color = if (nzchar(input$tools_goora_flat_color %||% "")) {
+        input$tools_goora_flat_color
+      } else {
+        defs_goora$style$flat_color %||% "#B0B0B0"
       },
-      width = function() plot_dims_px()$w,
-      height = function() plot_dims_px()$h,
-      res = 150
-      )
-      output$tools_goora_table <- DT::renderDT({
-        render_table("goora_table")
-      })
+      alpha = safe_num(input$tools_goora_alpha, defs_goora$style$alpha %||% 0.8),
+      show_go_id = isTRUE(input$tools_goora_show_go_id),
+      font_size = safe_int(input$tools_goora_font_size, defs_goora$style$font_size %||% 14),
+      axis_text_size = safe_int(input$tools_goora_axis_text_size, defs_goora$style$axis_text_size %||% 20),
+      width = safe_num(input$tools_goora_width, defs_goora$style$width %||% 12),
+      height = safe_num(input$tools_goora_height, defs_goora$style$height %||% 6),
+      flip_axis = isTRUE(input$tools_goora_flip_axis),
+      ontology_filter = input$tools_goora_ontology_view %||% "BP"  # Use view selector for filtering display
+    )
+
+    # Re-render with current style
+    rend <- tb_render_goora(res, style, meta = NULL)
+    rv$rendered <- rend
+
+    # Get the plot for the selected ontology
+    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
+    plot_key <- paste0(ont, "_plot")
+    p <- rend$plots[[plot_key]]
+
+    # Fallback to single plot if no tabs
+    if (is.null(p) && length(rend$plots) > 0) {
+      p <- rend$plots[[1]]
     }
-  }, ignoreInit = TRUE)
+
+    if (is.null(p)) {
+      plot.new()
+      text(0.5, 0.5, "No enriched terms for this ontology.")
+      return(invisible(NULL))
+    }
+    suppressMessages(print(p))
+  },
+  width = function() plot_dims_px()$w,
+  height = function() plot_dims_px()$h,
+  res = 150
+  )
+
+  output$tools_goora_table <- DT::renderDT({
+    rend <- rv$rendered
+    if (is.null(rend)) {
+      return(DT::datatable(data.frame()))
+    }
+
+    # Get the table for the selected ontology
+    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
+    table_key <- paste0(ont, "_table")
+    df <- rend$tables[[table_key]]
+
+    # Fallback to single table if no tabs
+    if (is.null(df) && length(rend$tables) > 0) {
+      df <- rend$tables[[1]]
+    }
+
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+      return(DT::datatable(data.frame()))
+    }
+
+    n_rows <- nrow(df)
+    DT::datatable(
+      df,
+      options = list(
+        pageLength = min(15, n_rows),
+        lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
+        scrollX = TRUE,
+        scrollY = "350px",
+        scrollCollapse = TRUE,
+        deferRender = TRUE,
+        searchDelay = 350,
+        autoWidth = FALSE
+      ),
+      rownames = FALSE
+    )
+  })
 }

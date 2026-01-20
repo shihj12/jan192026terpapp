@@ -92,13 +92,13 @@ tools_1dgofcs_ui <- function() {
         ),
         actionButton("tools_1dgofcs_run", "Run 1D GO-FCS", class = "btn-primary btn-tool-action"),
         hr(),
-        tags$h4("Filter"),
+        tags$h4("View"),
         selectInput(
-          "tools_1dgofcs_ontology_filter",
+          "tools_1dgofcs_ontology_view",
           "Ontology",
-          choices = c("All" = "all", "Biological Process" = "BP",
+          choices = c("Biological Process" = "BP",
                       "Molecular Function" = "MF", "Cellular Component" = "CC"),
-          selected = "all"
+          selected = "BP"
         ),
         tools_collapse_section_ui(
           "tools_1dgofcs_params_section",
@@ -361,17 +361,14 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     rv_1dgofcs$results <- NULL
     rv_1dgofcs$rendered <- NULL
     rv_1dgofcs$input_count <- NULL
-    rv_1dgofcs$run_status <- "idle"
 
     tb <- app_state$terpbase
     if (is.null(tb)) {
       rv_1dgofcs$status_msg <- "No TerpBase loaded. Load one above or build one in the TerpBase page."
       rv_1dgofcs$status_level <- "error"
+      rv_1dgofcs$run_status <- "idle"
       return()
     }
-
-    # Ensure terpbase has protein_to_go and go_terms mappings
-    tb <- tools_1dgofcs_ensure_terpbase_go_mappings(tb)
 
     parsed <- parse_gene_score_input(input$tools_1dgofcs_genes)
     rv_1dgofcs$input_count <- length(parsed$genes)
@@ -379,6 +376,7 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     if (length(parsed$genes) == 0) {
       rv_1dgofcs$status_msg <- "Enter at least one gene with a score to run 1D GO-FCS."
       rv_1dgofcs$status_level <- "warn"
+      rv_1dgofcs$run_status <- "idle"
       return()
     }
 
@@ -386,17 +384,11 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     scores <- parsed$scores
     names(scores) <- parsed$genes
 
+    # Collect params and style from inputs (lightweight)
     params <- list(
       fdr_cutoff = safe_num(input$tools_1dgofcs_fdr_cutoff, defs_1dgofcs$params$fdr_cutoff %||% 0.03),
       min_term_size = safe_int(input$tools_1dgofcs_min_term_size, defs_1dgofcs$params$min_term_size %||% 5),
       max_terms = safe_int(input$tools_1dgofcs_max_terms, defs_1dgofcs$params$max_terms %||% 20)
-    )
-
-    payload <- list(
-      ok = TRUE,
-      params = params,
-      scores = scores,
-      terpbase = tb
     )
 
     style <- list(
@@ -415,42 +407,81 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
       width = safe_num(input$tools_1dgofcs_width, defs_1dgofcs$style$width %||% 14),
       height = safe_num(input$tools_1dgofcs_height, defs_1dgofcs$style$height %||% 6),
       flip_axis = isTRUE(input$tools_1dgofcs_flip_axis),
-      ontology_filter = input$tools_1dgofcs_ontology_filter %||% "all"
+      ontology_filter = "all"  # Always compute all ontologies
     )
 
     # Store style for later use when rendering
     rv_1dgofcs$pending_style <- style
 
+    # Show progress immediately - before any heavy work
+    rv_1dgofcs$progress_path <- tempfile(fileext = ".json")
+    rv_1dgofcs$run_start_time <- Sys.time()
+    rv_1dgofcs$run_status <- "running"
+    write_progress(rv_1dgofcs$progress_path, "running", "Starting 1D GO-FCS analysis...", 5)
+
     # Check if callr is available for async execution
     has_callr <- requireNamespace("callr", quietly = TRUE)
 
     if (has_callr) {
-      # Async execution with callr
-      rv_1dgofcs$progress_path <- tempfile(fileext = ".json")
-      rv_1dgofcs$run_start_time <- Sys.time()
-      rv_1dgofcs$run_status <- "running"
-
-      # Write initial progress
-      write_progress(rv_1dgofcs$progress_path, "running", "Starting 1D GO-FCS analysis...", 5)
-
-      # Get app root for sourcing files
       app_root <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
 
       rv_1dgofcs$bg_process <- callr::r_bg(
-        func = function(app_root, payload, params, progress_path) {
-          # Source required files
-          source(file.path(app_root, "R/engines/stats_go.R"), local = TRUE)
-          source(file.path(app_root, "R/utils/utils.R"), local = TRUE)
+        func = function(app_root, tb, scores, params, progress_path) {
+          # Set working directory (critical for file paths to resolve correctly)
+          setwd(app_root)
 
           write_prog <- function(msg, pct) {
             obj <- list(status = "running", message = msg, pct = pct)
             tryCatch(jsonlite::write_json(obj, progress_path, auto_unbox = TRUE), error = function(e) NULL)
           }
 
+          write_prog("Loading engine code...", 5)
+
+          # Source all required files (same pattern as new_run page)
+          source(file.path(app_root, "R", "00_init.R"), local = FALSE)
+          engine_files <- list.files(file.path(app_root, "R", "engines"), pattern = "\\.R$", full.names = TRUE)
+          for (f in engine_files) source(f, local = FALSE)
+          stats_files <- list.files(file.path(app_root, "R", "engines", "stats"), pattern = "\\.R$", full.names = TRUE)
+          for (f in stats_files) source(f, local = FALSE)
+          utils_files <- list.files(file.path(app_root, "R", "utils"), pattern = "\\.R$", full.names = TRUE)
+          for (f in utils_files) source(f, local = FALSE)
+
+          write_prog("Preparing GO mappings...", 10)
+
+          # Ensure terpbase has protein_to_go and go_terms mappings (moved to background)
+          if (is.null(tb$protein_to_go) && !is.null(tb$annot_long)) {
+            annot <- tb$annot_long
+            if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
+              genes_list <- unique(annot$gene)
+              protein_to_go <- lapply(genes_list, function(g) {
+                unique(annot$ID[annot$gene == g])
+              })
+              names(protein_to_go) <- genes_list
+              tb$protein_to_go <- protein_to_go
+            }
+          }
+          if (is.null(tb$go_terms) && !is.null(tb$terms_by_id)) {
+            terms <- tb$terms_by_id
+            if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
+              go_terms <- lapply(seq_len(nrow(terms)), function(i) {
+                list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
+              })
+              names(go_terms) <- terms$ID
+              tb$go_terms <- go_terms
+            }
+          }
+
+          payload <- list(
+            ok = TRUE,
+            params = params,
+            scores = scores,
+            terpbase = tb
+          )
+
           write_prog("Running functional class scoring...", 30)
 
           result <- tryCatch({
-            res <- stats_1dgofcs_run(payload, params = params, context = list(terpbase = payload$terpbase))
+            res <- stats_1dgofcs_run(payload, params = params, context = list(terpbase = tb))
             write_prog("Analysis complete!", 100)
             list(ok = TRUE, result = res)
           }, error = function(e) {
@@ -461,7 +492,8 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
         },
         args = list(
           app_root = app_root,
-          payload = payload,
+          tb = tb,
+          scores = scores,
           params = params,
           progress_path = rv_1dgofcs$progress_path
         ),
@@ -469,8 +501,14 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
         supervise = TRUE
       )
     } else {
-      # Synchronous fallback
-      rv_1dgofcs$run_status <- "running"
+      # Synchronous fallback - must do prep work here
+      tb <- tools_1dgofcs_ensure_terpbase_go_mappings(tb)
+      payload <- list(
+        ok = TRUE,
+        params = params,
+        scores = scores,
+        terpbase = tb
+      )
 
       res <- tryCatch({
         stats_1dgofcs_run(payload, params = params, context = list(terpbase = tb))
@@ -555,8 +593,8 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
 
   # 1D GO-FCS tabs
   output$tools_1dgofcs_tabs <- renderUI({
-    rend <- rv_1dgofcs$rendered
-    if (is.null(rend)) {
+    res <- rv_1dgofcs$results
+    if (is.null(res)) {
       return(tags$div(class = "text-muted", "No 1D GO-FCS results yet."))
     }
 
@@ -565,107 +603,105 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     h_in <- safe_num(input$tools_1dgofcs_height, defs_1dgofcs$style$height %||% 6)
     ar <- w_in / h_in
 
-    tabs <- rend$tabs %||% character(0)
-    if (length(tabs) > 0) {
-      tab_panels <- lapply(tabs, function(tab) {
-        plot_id <- paste0("tools_1dgofcs_plot_", tolower(tab))
-        table_id <- paste0("tools_1dgofcs_table_", tolower(tab))
-        tabPanel(
-          tab,
-          div(
-            class = "tool-plot-box",
-            style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
-            plotOutput(plot_id, height = "100%")
-          ),
-          DT::DTOutput(table_id)
-        )
-      })
-      do.call(tabsetPanel, tab_panels)
-    } else {
-      tagList(
-        div(
-          class = "tool-plot-box",
-          style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
-          plotOutput("tools_1dgofcs_plot", height = "100%")
-        ),
-        DT::DTOutput("tools_1dgofcs_table")
-      )
-    }
+    tagList(
+      div(
+        class = "tool-plot-box",
+        style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
+        plotOutput("tools_1dgofcs_plot", height = "100%")
+      ),
+      DT::DTOutput("tools_1dgofcs_table")
+    )
   })
 
-  # 1D GO-FCS render observer
-  observeEvent(rv_1dgofcs$rendered, {
-    rend <- rv_1dgofcs$rendered
-    if (is.null(rend)) return(invisible(NULL))
-
-    render_plot_1d <- function(plot_key) {
-      p <- rend$plots[[plot_key]]
-      if (is.null(p)) {
-        plot.new()
-        text(0.5, 0.5, "No plot available.")
-        return(invisible(NULL))
-      }
-      suppressMessages(print(p))
+  # Reactive to re-render plot when plot options or ontology view changes
+  output$tools_1dgofcs_plot <- renderPlot({
+    res <- rv_1dgofcs$results
+    if (is.null(res)) {
+      plot.new()
+      text(0.5, 0.5, "No results yet.")
+      return(invisible(NULL))
     }
 
-    render_table_1d <- function(table_key) {
-      df <- rend$tables[[table_key]]
-      if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
-        return(DT::datatable(data.frame()))
-      }
-      n_rows <- nrow(df)
-      DT::datatable(
-        df,
-        options = list(
-          pageLength = min(15, n_rows),
-          lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
-          scrollX = TRUE,
-          scrollY = "350px",
-          scrollCollapse = TRUE,
-          deferRender = TRUE,
-          searchDelay = 350,
-          autoWidth = FALSE
-        ),
-        rownames = FALSE
-      )
-    }
-
-    tabs <- rend$tabs %||% character(0)
-    if (length(tabs) > 0) {
-      for (tab in tabs) {
-        plot_key <- paste0(tolower(tab), "_plot")
-        table_key <- paste0(tolower(tab), "_table")
-        plot_id <- paste0("tools_1dgofcs_plot_", tolower(tab))
-        table_id <- paste0("tools_1dgofcs_table_", tolower(tab))
-
-        local({
-          pk <- plot_key
-          tk <- table_key
-          pid <- plot_id
-          tid <- table_id
-          output[[pid]] <- renderPlot({
-            render_plot_1d(pk)
-          },
-          width = function() plot_dims_px_1dgofcs()$w,
-          height = function() plot_dims_px_1dgofcs()$h,
-          res = 150
-          )
-          output[[tid]] <- DT::renderDT({
-            render_table_1d(tk)
-          })
-        })
-      }
-    } else {
-      output$tools_1dgofcs_plot <- renderPlot({
-        render_plot_1d("1dgofcs_plot")
+    # Build current style from inputs (reactive to plot option changes)
+    style <- list(
+      plot_type = input$tools_1dgofcs_plot_type %||% defs_1dgofcs$style$plot_type %||% "bar",
+      color_mode = input$tools_1dgofcs_color_mode %||% defs_1dgofcs$style$color_mode %||% "fdr",
+      fdr_palette = input$tools_1dgofcs_fdr_palette %||% defs_1dgofcs$style$fdr_palette %||% "yellow_cap",
+      flat_color = if (nzchar(input$tools_1dgofcs_flat_color %||% "")) {
+        input$tools_1dgofcs_flat_color
+      } else {
+        defs_1dgofcs$style$flat_color %||% "#B0B0B0"
       },
-      width = function() plot_dims_px_1dgofcs()$w,
-      height = function() plot_dims_px_1dgofcs()$h,
-      res = 150
-      )
-      output$tools_1dgofcs_table <- DT::renderDT({
-        render_table_1d("1dgofcs_table")
-      })
+      alpha = safe_num(input$tools_1dgofcs_alpha, defs_1dgofcs$style$alpha %||% 0.8),
+      show_go_id = isTRUE(input$tools_1dgofcs_show_go_id),
+      font_size = safe_int(input$tools_1dgofcs_font_size, defs_1dgofcs$style$font_size %||% 14),
+      axis_text_size = safe_int(input$tools_1dgofcs_axis_text_size, defs_1dgofcs$style$axis_text_size %||% 20),
+      width = safe_num(input$tools_1dgofcs_width, defs_1dgofcs$style$width %||% 14),
+      height = safe_num(input$tools_1dgofcs_height, defs_1dgofcs$style$height %||% 6),
+      flip_axis = isTRUE(input$tools_1dgofcs_flip_axis),
+      ontology_filter = input$tools_1dgofcs_ontology_view %||% "BP"  # Use view selector for filtering display
+    )
+
+    # Re-render with current style
+    rend <- tb_render_1dgofcs(res, style, meta = NULL)
+    rv_1dgofcs$rendered <- rend
+
+    # Get the plot for the selected ontology
+    ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
+    plot_key <- paste0(ont, "_plot")
+    p <- rend$plots[[plot_key]]
+
+    # Fallback to single plot if no tabs
+    if (is.null(p) && length(rend$plots) > 0) {
+      p <- rend$plots[[1]]
     }
-  }, ignoreInit = TRUE)
+
+    if (is.null(p)) {
+      plot.new()
+      text(0.5, 0.5, "No enriched terms for this ontology.")
+      return(invisible(NULL))
+    }
+    suppressMessages(print(p))
+  },
+  width = function() plot_dims_px_1dgofcs()$w,
+  height = function() plot_dims_px_1dgofcs()$h,
+  res = 150
+  )
+
+  output$tools_1dgofcs_table <- DT::renderDT({
+    rend <- rv_1dgofcs$rendered
+    if (is.null(rend)) {
+      return(DT::datatable(data.frame()))
+    }
+
+    # Get the table for the selected ontology
+    ont <- tolower(input$tools_1dgofcs_ontology_view %||% "BP")
+    table_key <- paste0(ont, "_table")
+    df <- rend$tables[[table_key]]
+
+    # Fallback to single table if no tabs
+    if (is.null(df) && length(rend$tables) > 0) {
+      df <- rend$tables[[1]]
+    }
+
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+      return(DT::datatable(data.frame()))
+    }
+
+    n_rows <- nrow(df)
+    DT::datatable(
+      df,
+      options = list(
+        pageLength = min(15, n_rows),
+        lengthMenu = list(c(10, 15, 25, 50), c("10", "15", "25", "50")),
+        scrollX = TRUE,
+        scrollY = "350px",
+        scrollCollapse = TRUE,
+        deferRender = TRUE,
+        searchDelay = 350,
+        autoWidth = FALSE
+      ),
+      rownames = FALSE
+    )
+  })
 }
