@@ -133,7 +133,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "processing",
       description = "Preprocessing utilities (filters, aggregation, contaminants, imputation).",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -221,7 +221,44 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       outputs = list(figures = c(), tables = c("aggregation_log"), interactive = FALSE),
       render_spec = list(plots = character(0), tables = c("aggregation_log"), tabs = NULL)
     ),
-    
+
+    # ----------------------------
+    # Metabolite Analysis Container
+    # ----------------------------
+    metabolite_analysis = list(
+      engine_id = "metabolite_analysis",
+      type = "container",
+      label = "Metabolite Analysis",
+      category = "processing",
+      description = "Container for metabolite-level analysis steps. Unlike peptides, metabolites do not aggregate.",
+      supports_sequential = FALSE,
+      accepted_input_levels = c("metabolite"),
+      locked_parent = TRUE,
+      allowed_child_engines = c(
+        "dataprocessor",
+        "idquant_id_quant",
+        "idquant_average_value",
+        "idquant_cv_scatter",
+        "idquant_cv_bar",
+        "idquant_overlap",
+        "idquant_overlap_detected",
+        "idquant_overlap_quantified"
+      ),
+      # NO forced_final_substep - metabolites don't aggregate like peptides
+      exit_level = "metabolite",
+      requirements = list(
+        min_groups = 1,
+        requires_terpbase = FALSE,
+        requires_metabobase = FALSE,
+        required_ids = c("metabolite"),
+        analysis_levels = c("metabolite")
+      ),
+      params_schema = list(),
+      style_schema = list(),
+      outputs = list(figures = c(), tables = c(), interactive = FALSE),
+      render_spec = list(plots = character(0), tables = character(0), tabs = NULL)
+    ),
+
     # ----------------------------
     # QC
     # ----------------------------
@@ -230,9 +267,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       type = "container",
       label = "Quantitative QC",
       category = "qc",
-      description = "Container for ID quantification summary views (protein or peptide).",
+      description = "Container for ID quantification summary views (protein, peptide, or metabolite).",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       locked_parent = TRUE,
       allowed_child_engines = c(
         "idquant_id_quant",
@@ -260,9 +297,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "idquant_id_quant",
       label = "ID & Quantification",
       category = "qc",
-      description = "Protein identification/quantification summary view.",
+      description = "Identification/quantification summary view.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -313,7 +350,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "Average value summary view.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -481,7 +518,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "CV% scatter/table view.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -602,9 +639,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "idquant_cv_bar",
       label = "Coef. Of Variation (CV) (bar)",
       category = "qc",
-      description = "CV% bar chart view (used within Peptide Analysis).",
+      description = "CV% bar chart view.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("peptide", "protein"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -720,7 +757,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "Overlap view (UpSet).",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -827,9 +864,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "idquant_overlap_detected",
       label = "Overlaps (Identified)",
       category = "qc",
-      description = "Overlap view using detected proteins.",
+      description = "Overlap view using detected entries.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -936,9 +973,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "idquant_overlap_quantified",
       label = "Overlaps (Quantified)",
       category = "qc",
-      description = "Overlap view using reproducibly detected proteins.",
+      description = "Overlap view using reproducibly detected entries.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein", "peptide"),
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
       picker_hidden = TRUE,
       requirements = list(
         min_groups = 1,
@@ -1046,7 +1083,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "Pairwise scatter + Spearman rho comparisons.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -1108,7 +1145,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "Distribution plots across groups / replicates.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -1170,7 +1207,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "qc",
       description = "Vertical distribution plot across groups / replicates.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -1240,7 +1277,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "trends",
       description = "PCA scores + scree; optional loadings correlation analysis.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -1285,9 +1322,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "heatmap",
       label = "Targeted Heatmap",
       category = "comparison",
-      description = "Standalone heatmap for a user-provided gene list.",
+      description = "Standalone heatmap for a user-provided gene/metabolite list.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 1,
         requires_terpbase = FALSE,
@@ -1368,9 +1405,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       engine_id = "ftest_heatmap",
       label = "F-test Heatmap",
       category = "comparison",
-      description = "Heatmap of statistically significant genes from multi-group F-test.",
+      description = "Heatmap of statistically significant features from multi-group F-test.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 2,
         requires_terpbase = FALSE,
@@ -1474,7 +1511,7 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       category = "comparison",
       description = "Pairwise volcano plots + summaries.",
       supports_sequential = FALSE,
-      accepted_input_levels = c("protein"),
+      accepted_input_levels = c("protein", "metabolite"),
       requirements = list(
         min_groups = 2,
         requires_terpbase = TRUE,
@@ -1610,10 +1647,10 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
         analysis_levels = c("protein")
       ),
       params_schema = list(
-        msterp_schema_field("fdr_cutoff", "num", "FDR cutoff", default = 0.03, min = 0, max = 1),
+        msterp_schema_field("fdr_cutoff", "num", "FDR cutoff", default = 0.05, min = 0, max = 1),
         msterp_schema_field("min_term_size", "int", "Min term size", default = 5, min = 1,
                             help = "Minimum proteins in database annotated to a GO term (filters small terms)"),
-        msterp_schema_field("min_overlap", "int", "Min overlap", default = 1, min = 1,
+        msterp_schema_field("min_overlap", "int", "Min overlap", default = 3, min = 1,
                             help = "Minimum query proteins that must overlap with a GO term (filters weak hits)"),
         msterp_schema_field("max_terms", "int", "Terms to show", default = 20, min = 1, max = 200),
         msterp_schema_field(
@@ -1692,6 +1729,8 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
         ),
         msterp_schema_field("fdr_cutoff", "num", "FDR cutoff", default = 0.03, min = 0, max = 1),
         msterp_schema_field("min_term_size", "int", "Min term size", default = 5, min = 1),
+        msterp_schema_field("min_overlap", "int", "Min overlap", default = 5, min = 1,
+                            help = "Minimum query proteins that must overlap with a GO term (filters weak hits)"),
         msterp_schema_field("max_terms", "int", "Terms to show", default = 20, min = 1, max = 200),
         msterp_schema_field(
           "ontology", "choice", "Ontology",
@@ -1769,6 +1808,8 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
         ),
         msterp_schema_field("fdr_cutoff", "num", "FDR cutoff", default = 0.03, min = 0, max = 1),
         msterp_schema_field("min_term_size", "int", "Min term size", default = 5, min = 1),
+        msterp_schema_field("min_overlap", "int", "Min overlap", default = 5, min = 1,
+                            help = "Minimum query proteins that must overlap with a GO term (filters weak hits)"),
         msterp_schema_field("max_terms", "int", "Terms to show", default = 20, min = 1, max = 200),
         msterp_schema_field(
           "ontology", "choice", "Ontology",
@@ -1903,6 +1944,164 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       outputs = list(figures = c("subloc_plot"), tables = c("subloc_counts"),
                      interactive = FALSE),
       render_spec = list(plots = c("subloc_plot"), tables = c("subloc_counts"), tabs = NULL)
+    ),
+
+    # ----------------------------
+    # Metabolite Enrichment Engines
+    # ----------------------------
+    msea = list(
+      engine_id = "msea",
+      label = "Pathway Enrichment (MSEA)",
+      category = "enrichment",
+      description = "Metabolite Set Enrichment Analysis - pathway over-representation using KEGG/Reactome.",
+      supports_sequential = FALSE,
+      accepted_input_levels = c("metabolite"),
+      requirements = list(
+        min_groups = 1,
+        requires_terpbase = FALSE,
+        requires_metabobase = TRUE,
+        required_ids = c("metabolite"),
+        analysis_levels = c("metabolite")
+      ),
+      params_schema = list(
+        msterp_schema_field("pathway_db", "choice", "Pathway database",
+                            default = "all",
+                            choices = c("kegg", "reactome", "all"),
+                            choice_labels = c("KEGG only", "Reactome only", "KEGG + Reactome")),
+        msterp_schema_field("fdr_cutoff", "num", "FDR cutoff",
+                            default = 0.05, min = 0, max = 1),
+        msterp_schema_field("min_pathway_size", "int", "Min pathway size",
+                            default = 3, min = 1, max = 100),
+        msterp_schema_field("min_overlap", "int", "Min overlap",
+                            default = 2, min = 1, max = 50,
+                            help = "Minimum number of query metabolites in pathway"),
+        msterp_schema_field("max_terms", "int", "Max terms to show",
+                            default = 20, min = 1, max = 200)
+      ),
+      style_schema = list(
+        msterp_schema_field("plot_type", "choice", "Plot type",
+                            default = "bar",
+                            choices = c("bar", "dot"),
+                            choice_labels = c("Bar chart", "Dot plot")),
+        msterp_schema_field("color_mode", "choice", "Color by",
+                            default = "fdr",
+                            choices = c("fdr", "flat"),
+                            choice_labels = c("FDR value", "Flat color")),
+        msterp_schema_field("flat_color", "string", "Flat color (hex)",
+                            default = "#4A90D9", advanced = TRUE),
+        msterp_schema_field("alpha", "num", "Opacity",
+                            default = 0.8, min = 0, max = 1, advanced = TRUE),
+        msterp_schema_field("axis_text_size", "int", "Axis text size",
+                            default = 12, min = 6, max = 40, advanced = TRUE),
+        msterp_schema_field("width", "num", "Plot width (in)",
+                            default = 10, min = 2, max = 24, advanced = TRUE),
+        msterp_schema_field("height", "num", "Plot height (in)",
+                            default = 8, min = 2, max = 24, advanced = TRUE)
+      ),
+      outputs = list(figures = c("msea_plot"), tables = c("msea_results"), interactive = TRUE),
+      render_spec = list(plots = c("msea_plot"), tables = c("msea_results"), tabs = NULL)
+    ),
+
+    class_enrichment = list(
+      engine_id = "class_enrichment",
+      label = "Chemical Class Enrichment",
+      category = "enrichment",
+      description = "Enrichment analysis of chemical classes (lipids, amino acids, etc.).",
+      supports_sequential = FALSE,
+      accepted_input_levels = c("metabolite"),
+      requirements = list(
+        min_groups = 1,
+        requires_terpbase = FALSE,
+        requires_metabobase = TRUE,
+        required_ids = c("metabolite"),
+        analysis_levels = c("metabolite")
+      ),
+      params_schema = list(
+        msterp_schema_field("class_level", "choice", "Classification level",
+                            default = "class",
+                            choices = c("superclass", "class", "subclass"),
+                            choice_labels = c("Superclass", "Class", "Subclass")),
+        msterp_schema_field("fdr_cutoff", "num", "FDR cutoff",
+                            default = 0.05, min = 0, max = 1),
+        msterp_schema_field("min_class_size", "int", "Min class size",
+                            default = 3, min = 1, max = 100),
+        msterp_schema_field("max_terms", "int", "Max terms to show",
+                            default = 20, min = 1, max = 200)
+      ),
+      style_schema = list(
+        msterp_schema_field("plot_type", "choice", "Plot type",
+                            default = "bar",
+                            choices = c("bar", "dot"),
+                            choice_labels = c("Bar chart", "Dot plot")),
+        msterp_schema_field("color_mode", "choice", "Color by",
+                            default = "fdr",
+                            choices = c("fdr", "flat"),
+                            choice_labels = c("FDR value", "Flat color")),
+        msterp_schema_field("flat_color", "string", "Flat color (hex)",
+                            default = "#7B68EE", advanced = TRUE),
+        msterp_schema_field("alpha", "num", "Opacity",
+                            default = 0.8, min = 0, max = 1, advanced = TRUE),
+        msterp_schema_field("axis_text_size", "int", "Axis text size",
+                            default = 12, min = 6, max = 40, advanced = TRUE),
+        msterp_schema_field("width", "num", "Plot width (in)",
+                            default = 10, min = 2, max = 24, advanced = TRUE),
+        msterp_schema_field("height", "num", "Plot height (in)",
+                            default = 8, min = 2, max = 24, advanced = TRUE)
+      ),
+      outputs = list(figures = c("class_enrichment_plot"), tables = c("class_enrichment_results"), interactive = TRUE),
+      render_spec = list(plots = c("class_enrichment_plot"), tables = c("class_enrichment_results"), tabs = NULL)
+    ),
+
+    pathway_fcs = list(
+      engine_id = "pathway_fcs",
+      label = "1D Pathway FCS",
+      category = "enrichment",
+      description = "1D Pathway Functional Class Scoring on a ranked metabolite list.",
+      supports_sequential = FALSE,
+      accepted_input_levels = c("metabolite"),
+      requirements = list(
+        min_groups = 2,
+        requires_terpbase = FALSE,
+        requires_metabobase = TRUE,
+        required_ids = c("metabolite"),
+        analysis_levels = c("metabolite")
+      ),
+      params_schema = list(
+        msterp_schema_field("pathway_db", "choice", "Pathway database",
+                            default = "all",
+                            choices = c("kegg", "reactome", "all"),
+                            choice_labels = c("KEGG only", "Reactome only", "KEGG + Reactome")),
+        msterp_schema_field("fdr_cutoff", "num", "FDR cutoff",
+                            default = 0.03, min = 0, max = 1),
+        msterp_schema_field("min_pathway_size", "int", "Min pathway size",
+                            default = 5, min = 1, max = 100),
+        msterp_schema_field("min_overlap", "int", "Min overlap",
+                            default = 3, min = 1, max = 50),
+        msterp_schema_field("max_terms", "int", "Max terms per database",
+                            default = 20, min = 1, max = 200)
+      ),
+      style_schema = list(
+        msterp_schema_field("plot_type", "choice", "Plot type",
+                            default = "bar",
+                            choices = c("bar", "dot"),
+                            choice_labels = c("Bar chart", "Dot plot")),
+        msterp_schema_field("color_mode", "choice", "Color by",
+                            default = "score",
+                            choices = c("score", "fdr", "flat"),
+                            choice_labels = c("Enrichment score", "FDR value", "Flat color")),
+        msterp_schema_field("flat_color", "string", "Flat color (hex)",
+                            default = "#20B2AA", advanced = TRUE),
+        msterp_schema_field("alpha", "num", "Opacity",
+                            default = 0.8, min = 0, max = 1, advanced = TRUE),
+        msterp_schema_field("axis_text_size", "int", "Axis text size",
+                            default = 12, min = 6, max = 40, advanced = TRUE),
+        msterp_schema_field("width", "num", "Plot width (in)",
+                            default = 14, min = 2, max = 24, advanced = TRUE),
+        msterp_schema_field("height", "num", "Plot height (in)",
+                            default = 6, min = 2, max = 24, advanced = TRUE)
+      ),
+      outputs = list(figures = c("pathway_fcs_plot"), tables = c("pathway_fcs_results"), interactive = TRUE),
+      render_spec = list(plots = c("pathway_fcs_plot"), tables = c("pathway_fcs_results"), tabs = NULL)
     )
 
   )
@@ -2059,7 +2258,7 @@ tb_registry_render_spec_sanity <- function(registry = msterp_engine_registry()) 
 msterp_validate_registry <- function(registry = msterp_engine_registry()) {
 
   # Canonical allowed values for input levels (lowercase only)
-  valid_input_levels <- c("protein", "peptide")
+  valid_input_levels <- c("protein", "peptide", "metabolite")
 
   # Valid field types for schema fields
   valid_field_types <- c("choice", "bool", "int", "num", "string", "range")

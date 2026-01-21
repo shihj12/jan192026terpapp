@@ -5424,6 +5424,451 @@ tb_normalize_render_output <- function(engine_def, rendered) {
   )
 }
 
+# ---- Metabolite Enrichment renderers -----------------------------------------
+
+# MSEA - Metabolite Set Enrichment Analysis (Pathway ORA)
+tb_render_msea <- function(results, style, meta) {
+  tb_require_pkg("ggplot2")
+
+  data_obj <- results$data %||% list()
+
+  # Pathway database filter
+  db_filter <- style$pathway_db_filter %||% "all"
+
+  # Get terms dataframe
+  df <- data_obj$terms
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(list(plots = list(), tables = list()))
+  }
+
+  # Apply database filter if not "all"
+  if (!identical(db_filter, "all") && "database" %in% names(df)) {
+    df <- df[grepl(db_filter, df$database, ignore.case = TRUE), , drop = FALSE]
+    if (nrow(df) == 0) {
+      return(list(plots = list(), tables = list()))
+    }
+  }
+
+  # Normalize column names
+  if (!"pathway_id" %in% names(df)) {
+    for (col in c("term_id", "ID", "pathway", "Pathway")) {
+      if (col %in% names(df)) { df$pathway_id <- df[[col]]; break }
+    }
+  }
+  if (!"pathway_name" %in% names(df)) {
+    for (col in c("term", "term_name", "Name", "name", "pathway_id")) {
+      if (col %in% names(df)) { df$pathway_name <- df[[col]]; break }
+    }
+  }
+  if (!"fdr" %in% names(df)) {
+    for (col in c("FDR", "p.adjust", "padj", "pvalue")) {
+      if (col %in% names(df)) { df$fdr <- df[[col]]; break }
+    }
+    if (!"fdr" %in% names(df)) df$fdr <- 1
+  }
+  if (!"n" %in% names(df)) {
+    for (col in c("count", "Count", "n_overlap", "overlap_count", "size")) {
+      if (col %in% names(df)) { df$n <- df[[col]]; break }
+    }
+    if (!"n" %in% names(df)) df$n <- 1
+  }
+  if (!"metabolite_ids" %in% names(df)) {
+    for (col in c("metabolites", "compounds", "hits")) {
+      if (col %in% names(df)) { df$metabolite_ids <- df[[col]]; break }
+    }
+    if (!"metabolite_ids" %in% names(df)) df$metabolite_ids <- ""
+  }
+  if (!"fold_enrichment" %in% names(df)) {
+    for (col in c("FoldEnrichment", "foldEnrichment", "enrichment_ratio")) {
+      if (col %in% names(df)) { df$fold_enrichment <- df[[col]]; break }
+    }
+    if (!"fold_enrichment" %in% names(df)) df$fold_enrichment <- 1
+  }
+
+  # Store original name for lookups
+  df$pathway_name_original <- df$pathway_name
+
+  # Handle visibility (hidden terms, custom labels)
+  hidden_terms <- character(0)
+  term_labels <- list()
+  if (!is.null(meta) && !is.null(meta$visibility)) {
+    hidden_terms <- meta$visibility$hidden_terms %||% character(0)
+    term_labels <- meta$visibility$term_labels %||% list()
+  }
+
+  df_all <- df
+  df_plot <- df_all[!(df_all$pathway_id %in% hidden_terms) & !(df_all$pathway_name_original %in% hidden_terms), , drop = FALSE]
+
+  # Apply custom labels
+  if (length(term_labels) > 0 && nrow(df_plot) > 0) {
+    for (i in seq_len(nrow(df_plot))) {
+      pid <- df_plot$pathway_id[i]
+      orig <- df_plot$pathway_name_original[i]
+      custom_label <- term_labels[[pid]] %||% term_labels[[orig]]
+      if (!is.null(custom_label) && nzchar(custom_label)) {
+        df_plot$pathway_name[i] <- custom_label
+      }
+    }
+  }
+
+  # Show pathway ID in labels if requested
+  show_pathway_id <- isTRUE(style$show_pathway_id %||% FALSE)
+  if (show_pathway_id && nrow(df_plot) > 0) {
+    for (i in seq_len(nrow(df_plot))) {
+      name <- df_plot$pathway_name[i]
+      pid <- df_plot$pathway_id[i]
+      if (!is.na(pid) && !grepl(pid, name, fixed = TRUE)) {
+        df_plot$pathway_name[i] <- paste0(name, " (", pid, ")")
+      }
+    }
+  }
+
+  if (nrow(df_plot) == 0) {
+    return(list(plots = list(), tables = list(msea_table = df_all)))
+  }
+
+  # Style parameters
+  plot_type <- style$plot_type %||% "bar"
+  axis_text_size <- tb_num(style$axis_text_size, 20)
+  font_size <- tb_num(style$font_size, 14)
+  alpha <- tb_num(style$alpha, 0.8)
+  fdr_palette <- style$fdr_palette %||% "yellow_cap"
+  flip_axis <- isTRUE(style$flip_axis %||% FALSE)
+
+  cm <- style$color_mode %||% "fdr"
+  use_flat_color <- (cm == "flat")
+  flat_color <- if (use_flat_color) (style$flat_color %||% "#B0B0B0") else NULL
+
+  # Prepare for plotting
+  df_plot$neglog10_fdr <- -log10(pmax(df_plot$fdr, 1e-300))
+
+  # Limit to max_terms
+  max_terms <- tb_num(style$max_terms %||% results$params$max_terms, 20)
+  if (nrow(df_plot) > max_terms) {
+    df_plot <- df_plot[order(df_plot$fdr), , drop = FALSE]
+    df_plot <- df_plot[seq_len(max_terms), , drop = FALSE]
+  }
+
+  # Order by fold_enrichment for display
+  df_plot$pathway_name <- factor(df_plot$pathway_name, levels = df_plot$pathway_name[order(df_plot$fold_enrichment)])
+
+  # Build plot
+  if (plot_type == "dot") {
+    p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = pathway_name, size = n))
+    if (use_flat_color) {
+      p <- p + ggplot2::geom_point(color = flat_color, alpha = alpha)
+    } else {
+      p <- p + ggplot2::geom_point(ggplot2::aes(color = neglog10_fdr), alpha = alpha) +
+        tb_fdr_color_scale(fdr_palette, "continuous")
+    }
+    p <- p + ggplot2::labs(x = "Fold Enrichment", y = NULL, size = "Count", color = "-log10(FDR)")
+  } else {
+    p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = pathway_name))
+    if (use_flat_color) {
+      p <- p + ggplot2::geom_col(fill = flat_color, alpha = alpha)
+    } else {
+      p <- p + ggplot2::geom_col(ggplot2::aes(fill = neglog10_fdr), alpha = alpha) +
+        tb_fdr_color_scale(fdr_palette, "fill")
+    }
+    p <- p + ggplot2::labs(x = "Fold Enrichment", y = NULL, fill = "-log10(FDR)")
+  }
+
+  p <- p + ggplot2::theme_minimal(base_size = font_size) +
+    ggplot2::theme(
+      axis.text.y = ggplot2::element_text(size = axis_text_size),
+      axis.text.x = ggplot2::element_text(size = axis_text_size * 0.8),
+      legend.position = "right"
+    )
+
+  if (flip_axis) {
+    p <- p + ggplot2::scale_x_reverse()
+  }
+
+  # Determine output key based on filter
+  plot_key <- paste0(tolower(db_filter), "_plot")
+  table_key <- paste0(tolower(db_filter), "_table")
+
+  list(
+    plots = setNames(list(p), plot_key),
+    tables = setNames(list(df_all), table_key)
+  )
+}
+
+# Chemical Class Enrichment
+tb_render_class_enrichment <- function(results, style, meta) {
+  tb_require_pkg("ggplot2")
+
+  data_obj <- results$data %||% list()
+
+  df <- data_obj$terms
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(list(plots = list(), tables = list()))
+  }
+
+  # Normalize column names
+  if (!"class_name" %in% names(df)) {
+    for (col in c("class", "Class", "term", "term_name")) {
+      if (col %in% names(df)) { df$class_name <- df[[col]]; break }
+    }
+  }
+  if (!"fdr" %in% names(df)) {
+    for (col in c("FDR", "p.adjust", "padj", "pvalue")) {
+      if (col %in% names(df)) { df$fdr <- df[[col]]; break }
+    }
+    if (!"fdr" %in% names(df)) df$fdr <- 1
+  }
+  if (!"n" %in% names(df)) {
+    for (col in c("count", "Count", "n_overlap", "overlap_count")) {
+      if (col %in% names(df)) { df$n <- df[[col]]; break }
+    }
+    if (!"n" %in% names(df)) df$n <- 1
+  }
+  if (!"metabolite_ids" %in% names(df)) {
+    for (col in c("metabolites", "compounds", "hits")) {
+      if (col %in% names(df)) { df$metabolite_ids <- df[[col]]; break }
+    }
+    if (!"metabolite_ids" %in% names(df)) df$metabolite_ids <- ""
+  }
+  if (!"fold_enrichment" %in% names(df)) {
+    for (col in c("FoldEnrichment", "foldEnrichment", "enrichment_ratio")) {
+      if (col %in% names(df)) { df$fold_enrichment <- df[[col]]; break }
+    }
+    if (!"fold_enrichment" %in% names(df)) df$fold_enrichment <- 1
+  }
+
+  df$class_name_original <- df$class_name
+
+  # Handle visibility
+  hidden_terms <- character(0)
+  term_labels <- list()
+  if (!is.null(meta) && !is.null(meta$visibility)) {
+    hidden_terms <- meta$visibility$hidden_terms %||% character(0)
+    term_labels <- meta$visibility$term_labels %||% list()
+  }
+
+  df_all <- df
+  df_plot <- df_all[!(df_all$class_name_original %in% hidden_terms), , drop = FALSE]
+
+  # Apply custom labels
+  if (length(term_labels) > 0 && nrow(df_plot) > 0) {
+    for (i in seq_len(nrow(df_plot))) {
+      orig <- df_plot$class_name_original[i]
+      custom_label <- term_labels[[orig]]
+      if (!is.null(custom_label) && nzchar(custom_label)) {
+        df_plot$class_name[i] <- custom_label
+      }
+    }
+  }
+
+  if (nrow(df_plot) == 0) {
+    return(list(plots = list(), tables = list(class_table = df_all)))
+  }
+
+  # Style parameters
+  plot_type <- style$plot_type %||% "bar"
+  axis_text_size <- tb_num(style$axis_text_size, 20)
+  font_size <- tb_num(style$font_size, 14)
+  alpha <- tb_num(style$alpha, 0.8)
+  fdr_palette <- style$fdr_palette %||% "yellow_cap"
+  flip_axis <- isTRUE(style$flip_axis %||% FALSE)
+
+  cm <- style$color_mode %||% "fdr"
+  use_flat_color <- (cm == "flat")
+  flat_color <- if (use_flat_color) (style$flat_color %||% "#B0B0B0") else NULL
+
+  df_plot$neglog10_fdr <- -log10(pmax(df_plot$fdr, 1e-300))
+
+  max_terms <- tb_num(style$max_terms %||% results$params$max_terms, 20)
+  if (nrow(df_plot) > max_terms) {
+    df_plot <- df_plot[order(df_plot$fdr), , drop = FALSE]
+    df_plot <- df_plot[seq_len(max_terms), , drop = FALSE]
+  }
+
+  df_plot$class_name <- factor(df_plot$class_name, levels = df_plot$class_name[order(df_plot$fold_enrichment)])
+
+  if (plot_type == "dot") {
+    p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = class_name, size = n))
+    if (use_flat_color) {
+      p <- p + ggplot2::geom_point(color = flat_color, alpha = alpha)
+    } else {
+      p <- p + ggplot2::geom_point(ggplot2::aes(color = neglog10_fdr), alpha = alpha) +
+        tb_fdr_color_scale(fdr_palette, "continuous")
+    }
+    p <- p + ggplot2::labs(x = "Fold Enrichment", y = NULL, size = "Count", color = "-log10(FDR)")
+  } else {
+    p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = class_name))
+    if (use_flat_color) {
+      p <- p + ggplot2::geom_col(fill = flat_color, alpha = alpha)
+    } else {
+      p <- p + ggplot2::geom_col(ggplot2::aes(fill = neglog10_fdr), alpha = alpha) +
+        tb_fdr_color_scale(fdr_palette, "fill")
+    }
+    p <- p + ggplot2::labs(x = "Fold Enrichment", y = NULL, fill = "-log10(FDR)")
+  }
+
+  p <- p + ggplot2::theme_minimal(base_size = font_size) +
+    ggplot2::theme(
+      axis.text.y = ggplot2::element_text(size = axis_text_size),
+      axis.text.x = ggplot2::element_text(size = axis_text_size * 0.8),
+      legend.position = "right"
+    )
+
+  if (flip_axis) {
+    p <- p + ggplot2::scale_x_reverse()
+  }
+
+  list(
+    plots = list(class_plot = p),
+    tables = list(class_table = df_all)
+  )
+}
+
+# Pathway FCS (Functional Class Scoring) for Metabolites
+tb_render_pathway_fcs <- function(results, style, meta) {
+  tb_require_pkg("ggplot2")
+
+  data_obj <- results$data %||% list()
+
+  # Pathway database filter
+  db_filter <- style$pathway_db_filter %||% "all"
+
+  df <- data_obj$terms
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(list(plots = list(), tables = list()))
+  }
+
+  # Apply database filter if not "all"
+  if (!identical(db_filter, "all") && "database" %in% names(df)) {
+    df <- df[grepl(db_filter, df$database, ignore.case = TRUE), , drop = FALSE]
+    if (nrow(df) == 0) {
+      return(list(plots = list(), tables = list()))
+    }
+  }
+
+  # Normalize column names
+  if (!"pathway_id" %in% names(df)) {
+    for (col in c("term_id", "ID", "pathway", "Pathway")) {
+      if (col %in% names(df)) { df$pathway_id <- df[[col]]; break }
+    }
+  }
+  if (!"pathway_name" %in% names(df)) {
+    for (col in c("term", "term_name", "Name", "name", "pathway_id")) {
+      if (col %in% names(df)) { df$pathway_name <- df[[col]]; break }
+    }
+  }
+  if (!"fdr" %in% names(df)) {
+    for (col in c("FDR", "p.adjust", "padj", "pvalue")) {
+      if (col %in% names(df)) { df$fdr <- df[[col]]; break }
+    }
+    if (!"fdr" %in% names(df)) df$fdr <- 1
+  }
+  if (!"score" %in% names(df)) {
+    for (col in c("NES", "nes", "enrichment_score", "ES")) {
+      if (col %in% names(df)) { df$score <- df[[col]]; break }
+    }
+    if (!"score" %in% names(df)) df$score <- 0
+  }
+  if (!"metabolite_ids" %in% names(df)) {
+    for (col in c("metabolites", "compounds", "hits", "leading_edge")) {
+      if (col %in% names(df)) { df$metabolite_ids <- df[[col]]; break }
+    }
+    if (!"metabolite_ids" %in% names(df)) df$metabolite_ids <- ""
+  }
+
+  df$pathway_name_original <- df$pathway_name
+
+  # Handle visibility
+  hidden_terms <- character(0)
+  term_labels <- list()
+  if (!is.null(meta) && !is.null(meta$visibility)) {
+    hidden_terms <- meta$visibility$hidden_terms %||% character(0)
+    term_labels <- meta$visibility$term_labels %||% list()
+  }
+
+  df_all <- df
+  df_plot <- df_all[!(df_all$pathway_id %in% hidden_terms) & !(df_all$pathway_name_original %in% hidden_terms), , drop = FALSE]
+
+  # Apply custom labels
+  if (length(term_labels) > 0 && nrow(df_plot) > 0) {
+    for (i in seq_len(nrow(df_plot))) {
+      pid <- df_plot$pathway_id[i]
+      orig <- df_plot$pathway_name_original[i]
+      custom_label <- term_labels[[pid]] %||% term_labels[[orig]]
+      if (!is.null(custom_label) && nzchar(custom_label)) {
+        df_plot$pathway_name[i] <- custom_label
+      }
+    }
+  }
+
+  show_pathway_id <- isTRUE(style$show_pathway_id %||% FALSE)
+  if (show_pathway_id && nrow(df_plot) > 0) {
+    for (i in seq_len(nrow(df_plot))) {
+      name <- df_plot$pathway_name[i]
+      pid <- df_plot$pathway_id[i]
+      if (!is.na(pid) && !grepl(pid, name, fixed = TRUE)) {
+        df_plot$pathway_name[i] <- paste0(name, " (", pid, ")")
+      }
+    }
+  }
+
+  if (nrow(df_plot) == 0) {
+    return(list(plots = list(), tables = list(pathway_fcs_table = df_all)))
+  }
+
+  # Style parameters
+  axis_text_size <- tb_num(style$axis_text_size, 20)
+  font_size <- tb_num(style$font_size, 14)
+  alpha <- tb_num(style$alpha, 0.8)
+  fdr_palette <- style$fdr_palette %||% "yellow_cap"
+  flip_axis <- isTRUE(style$flip_axis %||% FALSE)
+
+  cm <- style$color_mode %||% "fdr"
+  use_flat_color <- (cm == "flat")
+  flat_color <- if (use_flat_color) (style$flat_color %||% "#B0B0B0") else NULL
+
+  df_plot$neglog10_fdr <- -log10(pmax(df_plot$fdr, 1e-300))
+
+  max_terms <- tb_num(style$max_terms %||% results$params$max_terms, 20)
+  if (nrow(df_plot) > max_terms) {
+    df_plot <- df_plot[order(df_plot$fdr), , drop = FALSE]
+    df_plot <- df_plot[seq_len(max_terms), , drop = FALSE]
+  }
+
+  # Order by score for FCS
+  df_plot$pathway_name <- factor(df_plot$pathway_name, levels = df_plot$pathway_name[order(df_plot$score)])
+
+  # Bar plot showing normalized enrichment score
+  p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = score, y = pathway_name))
+  if (use_flat_color) {
+    p <- p + ggplot2::geom_col(fill = flat_color, alpha = alpha)
+  } else {
+    p <- p + ggplot2::geom_col(ggplot2::aes(fill = neglog10_fdr), alpha = alpha) +
+      tb_fdr_color_scale(fdr_palette, "fill")
+  }
+
+  p <- p +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    ggplot2::labs(x = "Normalized Enrichment Score", y = NULL, fill = "-log10(FDR)") +
+    ggplot2::theme_minimal(base_size = font_size) +
+    ggplot2::theme(
+      axis.text.y = ggplot2::element_text(size = axis_text_size),
+      axis.text.x = ggplot2::element_text(size = axis_text_size * 0.8),
+      legend.position = "right"
+    )
+
+  if (flip_axis) {
+    p <- p + ggplot2::scale_x_reverse()
+  }
+
+  plot_key <- paste0(tolower(db_filter), "_plot")
+  table_key <- paste0(tolower(db_filter), "_table")
+
+  list(
+    plots = setNames(list(p), plot_key),
+    tables = setNames(list(df_all), table_key)
+  )
+}
+
 # ---- Data Processor renderer -------------------------------------------------
 
 tb_render_dataprocessor <- function(results, style, meta) {
@@ -6076,6 +6521,9 @@ terpbook_render_node <- function(engine_id, results, effective_state, registry =
     "1dgofcs"  = tb_render_1dgofcs(results, style, meta),
     "2dgofcs"  = tb_render_2dgofcs(results, style, meta),
     "subloc"   = tb_render_subloc(results, style, meta),
+    "msea"     = tb_render_msea(results, style, meta),
+    "class_enrichment" = tb_render_class_enrichment(results, style, meta),
+    "pathway_fcs" = tb_render_pathway_fcs(results, style, meta),
     {
       # Fallback for unknown engines
       plots <- list()

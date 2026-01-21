@@ -82,13 +82,13 @@ tools_1dgofcs_ui <- function() {
           placeholder = "No file selected"
         ),
         hr(),
-        tags$h4("Gene Input with Scores"),
-        tags$p(class = "text-muted", "Enter gene/protein ID and score (tab or comma separated), one per line."),
+        tags$h4("Ranked Gene List"),
+        tags$p(class = "text-muted", "Enter gene/protein IDs in ranked order (one per line, best/top-ranked first)."),
         textAreaInput(
           "tools_1dgofcs_genes",
-          "Gene list (ID<tab>Score per line)",
+          "Ranked gene list (one ID per line)",
           rows = 10,
-          placeholder = "TP53\t2.5\nEGFR\t-1.2\nBRCA1\t0.8"
+          placeholder = "TP53\nEGFR\nBRCA1\nMYC\nKRAS"
         ),
         div(
           style = "display: flex; gap: 8px; margin-top: 5px;",
@@ -120,6 +120,13 @@ tools_1dgofcs_ui <- function() {
             "tools_1dgofcs_min_term_size",
             "Min term size",
             value = params_defaults$min_term_size %||% 5,
+            min = 1,
+            step = 1
+          ),
+          numericInput(
+            "tools_1dgofcs_min_overlap",
+            "Min overlap",
+            value = params_defaults$min_overlap %||% 5,
             min = 1,
             step = 1
           ),
@@ -256,33 +263,30 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     # Reset parameter inputs to defaults
     updateNumericInput(session, "tools_1dgofcs_fdr_cutoff", value = defs_1dgofcs$params$fdr_cutoff %||% 0.03)
     updateNumericInput(session, "tools_1dgofcs_min_term_size", value = defs_1dgofcs$params$min_term_size %||% 5)
+    updateNumericInput(session, "tools_1dgofcs_min_overlap", value = defs_1dgofcs$params$min_overlap %||% 5)
     updateNumericInput(session, "tools_1dgofcs_max_terms", value = defs_1dgofcs$params$max_terms %||% 20)
     updateTextAreaInput(session, "tools_1dgofcs_genes", value = "")
   }, ignoreInit = TRUE)
 
-  # Parse gene input with scores for 1D GO-FCS
+  # Parse ranked gene list for 1D GO-FCS
+
+  # Input: one gene per line, already in ranked order (best/top first)
+  # Output: genes and scores where scores are derived from rank position
   parse_gene_score_input <- function(text) {
     if (is.null(text) || !nzchar(text)) return(list(genes = character(0), scores = numeric(0)))
     lines <- unlist(strsplit(text, "\\r?\\n"))
     lines <- trimws(lines)
     lines <- lines[nzchar(lines)]
 
-    genes <- character(0)
-    scores <- numeric(0)
+    # Each line is just a gene ID
+    genes <- lines[nzchar(lines)]
 
-    for (line in lines) {
-      # Split by tab or comma
-      parts <- unlist(strsplit(line, "[\t,]"))
-      parts <- trimws(parts)
-      if (length(parts) >= 2) {
-        gene <- parts[1]
-        score <- suppressWarnings(as.numeric(parts[2]))
-        if (nzchar(gene) && !is.na(score)) {
-          genes <- c(genes, gene)
-          scores <- c(scores, score)
-        }
-      }
-    }
+    if (length(genes) == 0) return(list(genes = character(0), scores = numeric(0)))
+
+    # Convert rank position to scores: top-ranked gets highest score
+    # Using descending scores so rank 1 (first line) = highest score
+    n <- length(genes)
+    scores <- seq(from = n, to = 1, by = -1)
 
     list(genes = genes, scores = scores)
   }
@@ -402,7 +406,7 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     rv_1dgofcs$input_count <- length(parsed$genes)
 
     if (length(parsed$genes) == 0) {
-      rv_1dgofcs$status_msg <- "Enter at least one gene with a score to run 1D GO-FCS."
+      rv_1dgofcs$status_msg <- "Enter at least one gene to run 1D GO-FCS."
       rv_1dgofcs$status_level <- "warn"
       rv_1dgofcs$run_status <- "idle"
       return()
@@ -416,6 +420,7 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     params <- list(
       fdr_cutoff = safe_num(input$tools_1dgofcs_fdr_cutoff, defs_1dgofcs$params$fdr_cutoff %||% 0.03),
       min_term_size = safe_int(input$tools_1dgofcs_min_term_size, defs_1dgofcs$params$min_term_size %||% 5),
+      min_overlap = safe_int(input$tools_1dgofcs_min_overlap, defs_1dgofcs$params$min_overlap %||% 5),
       max_terms = safe_int(input$tools_1dgofcs_max_terms, defs_1dgofcs$params$max_terms %||% 20)
     )
 
@@ -613,7 +618,7 @@ tools_1dgofcs_server <- function(input, output, session, app_state, rv_1dgofcs, 
     tags$div(
       class = "card",
       tags$h4("1D GO-FCS summary"),
-      tags$p(sprintf("Input genes with scores: %s", ifelse(is.finite(n_input), n_input, "NA"))),
+      tags$p(sprintf("Input genes (ranked): %s", ifelse(is.finite(n_input), n_input, "NA"))),
       tags$p(sprintf("Enriched terms: %s", n_terms)),
       if (!is.null(log_msg)) tags$p(log_msg)
     )

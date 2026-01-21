@@ -17,8 +17,7 @@
 #' Canonical analysis levels (lowercase only)
 #' @return Character vector of valid analysis levels
 nr_valid_analysis_levels <- function() {
-
-  c("protein", "peptide")
+  c("protein", "peptide", "metabolite")
 }
 
 #' Normalize analysis level to canonical lowercase form
@@ -197,6 +196,7 @@ nr_extract_metadata <- function(design_df) {
       id_primary_col = get_meta("id_primary_col"),
       id_protein_col = get_meta("id_protein_col"),
       id_gene_col = get_meta("id_gene_col"),
+      id_metabolite_col = get_meta("id_metabolite_col"),
       groups = groups,
       columns = col_rows,
       raw_meta = meta_map

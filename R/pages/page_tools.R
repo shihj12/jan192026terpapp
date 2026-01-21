@@ -7,6 +7,8 @@ library(shiny)
 source(file.path("R", "pages", "tools", "tool_goora.R"), local = FALSE)
 source(file.path("R", "pages", "tools", "tool_1dgofcs.R"), local = FALSE)
 source(file.path("R", "pages", "tools", "tool_2dgofcs.R"), local = FALSE)
+source(file.path("R", "pages", "tools", "tool_msea.R"), local = FALSE)
+source(file.path("R", "pages", "tools", "tool_class_enrichment.R"), local = FALSE)
 
 # ============================================================
 # Shared Utilities
@@ -64,6 +66,20 @@ tools_landing_ui <- function() {
       tags$p("2D functional class scoring on two ranked gene lists (scatter plot)."),
       actionButton("tools_open_2dgofcs", "Open 2D GO-FCS", class = "btn btn-primary")
     ),
+    # MSEA card (Metabolite Pathway Enrichment)
+    div(
+      class = "card",
+      tags$h3("MSEA"),
+      tags$p("Metabolite Set Enrichment Analysis (pathway over-representation)."),
+      actionButton("tools_open_msea", "Open MSEA", class = "btn btn-primary")
+    ),
+    # Chemical Class Enrichment card
+    div(
+      class = "card",
+      tags$h3("Class Enrichment"),
+      tags$p("Chemical class enrichment analysis for lipids, amino acids, etc."),
+      actionButton("tools_open_class_enrichment", "Open Class Enrichment", class = "btn btn-primary")
+    ),
     # QC snapshots card
     div(
       class = "card",
@@ -88,8 +104,10 @@ page_tools_server <- function(input, output, session, app_state) {
   defs_goora <- tools_goora_defaults()
   defs_1dgofcs <- tools_1dgofcs_defaults()
   defs_2dgofcs <- tools_2dgofcs_defaults()
+  defs_msea <- tools_msea_defaults()
+  defs_class_enrichment <- tools_class_enrichment_defaults()
 
-  # Track which tool view is active: "landing", "goora", "1dgofcs", or "2dgofcs"
+  # Track which tool view is active: "landing", "goora", "1dgofcs", "2dgofcs", "msea", or "class_enrichment"
   current_tool <- reactiveVal("landing")
 
   # Reactive values for GO-ORA
@@ -128,6 +146,32 @@ page_tools_server <- function(input, output, session, app_state) {
     stored_genes = NULL,
     stored_x_label = NULL,
     stored_y_label = NULL
+  )
+
+  # Reactive values for MSEA
+  rv_msea <- reactiveValues(
+    results = NULL,
+    rendered = NULL,
+    status_msg = NULL,
+    status_level = NULL,
+    input_count = NULL,
+    hidden_terms = character(),
+    term_labels = list(),
+    stored_params = NULL,
+    stored_metabolites = NULL
+  )
+
+  # Reactive values for Class Enrichment
+  rv_class_enrichment <- reactiveValues(
+    results = NULL,
+    rendered = NULL,
+    status_msg = NULL,
+    status_level = NULL,
+    input_count = NULL,
+    hidden_terms = character(),
+    term_labels = list(),
+    stored_params = NULL,
+    stored_metabolites = NULL
   )
 
   # Shared TerpBase loading function
@@ -170,6 +214,10 @@ page_tools_server <- function(input, output, session, app_state) {
       tools_1dgofcs_ui()
     } else if (tool == "2dgofcs") {
       tools_2dgofcs_ui()
+    } else if (tool == "msea") {
+      tools_msea_ui()
+    } else if (tool == "class_enrichment") {
+      tools_class_enrichment_ui()
     } else {
       tools_landing_ui()
     }
@@ -256,6 +304,61 @@ page_tools_server <- function(input, output, session, app_state) {
     rv_2dgofcs$stored_genes <- input$tools_2dgofcs_genes
     rv_2dgofcs$stored_x_label <- input$tools_2dgofcs_x_label
     rv_2dgofcs$stored_y_label <- input$tools_2dgofcs_y_label
+    current_tool("landing")
+  }, ignoreInit = TRUE)
+
+  # Navigation for MSEA
+  observeEvent(input$tools_open_msea, {
+    current_tool("msea")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_msea_back, {
+    rv_msea$stored_params <- list(
+      pathway_db = input$tools_msea_pathway_db,
+      fdr_cutoff = input$tools_msea_fdr_cutoff,
+      min_pathway_size = input$tools_msea_min_pathway_size,
+      min_overlap = input$tools_msea_min_overlap,
+      max_terms = input$tools_msea_max_terms,
+      pathway_db_view = input$tools_msea_pathway_db_view,
+      plot_type = input$tools_msea_plot_type,
+      color_mode = input$tools_msea_color_mode,
+      fdr_palette = input$tools_msea_fdr_palette,
+      flat_color = input$tools_msea_flat_color,
+      alpha = input$tools_msea_alpha,
+      show_pathway_id = input$tools_msea_show_pathway_id,
+      flip_axis = input$tools_msea_flip_axis,
+      font_size = input$tools_msea_font_size,
+      axis_text_size = input$tools_msea_axis_text_size,
+      width = input$tools_msea_width,
+      height = input$tools_msea_height
+    )
+    rv_msea$stored_metabolites <- input$tools_msea_metabolites
+    current_tool("landing")
+  }, ignoreInit = TRUE)
+
+  # Navigation for Class Enrichment
+  observeEvent(input$tools_open_class_enrichment, {
+    current_tool("class_enrichment")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_class_enrichment_back, {
+    rv_class_enrichment$stored_params <- list(
+      class_level = input$tools_class_enrichment_class_level,
+      fdr_cutoff = input$tools_class_enrichment_fdr_cutoff,
+      min_class_size = input$tools_class_enrichment_min_class_size,
+      max_terms = input$tools_class_enrichment_max_terms,
+      plot_type = input$tools_class_enrichment_plot_type,
+      color_mode = input$tools_class_enrichment_color_mode,
+      fdr_palette = input$tools_class_enrichment_fdr_palette,
+      flat_color = input$tools_class_enrichment_flat_color,
+      alpha = input$tools_class_enrichment_alpha,
+      flip_axis = input$tools_class_enrichment_flip_axis,
+      font_size = input$tools_class_enrichment_font_size,
+      axis_text_size = input$tools_class_enrichment_axis_text_size,
+      width = input$tools_class_enrichment_width,
+      height = input$tools_class_enrichment_height
+    )
+    rv_class_enrichment$stored_metabolites <- input$tools_class_enrichment_metabolites
     current_tool("landing")
   }, ignoreInit = TRUE)
 
@@ -402,4 +505,6 @@ page_tools_server <- function(input, output, session, app_state) {
   tools_goora_server(input, output, session, app_state, rv, defs_goora)
   tools_1dgofcs_server(input, output, session, app_state, rv_1dgofcs, defs_1dgofcs)
   tools_2dgofcs_server(input, output, session, app_state, rv_2dgofcs, defs_2dgofcs)
+  tools_msea_server(input, output, session, app_state, rv_msea, defs_msea)
+  tools_class_enrichment_server(input, output, session, app_state, rv_class_enrichment, defs_class_enrichment)
 }

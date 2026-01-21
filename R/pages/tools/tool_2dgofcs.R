@@ -82,23 +82,36 @@ tools_2dgofcs_ui <- function() {
           placeholder = "No file selected"
         ),
         hr(),
-        tags$h4("Gene Input with Two Scores"),
-        tags$p(class = "text-muted", "Enter gene/protein ID and two scores (tab or comma separated), one per line."),
-        textAreaInput(
-          "tools_2dgofcs_genes",
-          "Gene list (ID<tab>Score_X<tab>Score_Y per line)",
-          rows = 10,
-          placeholder = "TP53\t2.5\t1.3\nEGFR\t-1.2\t0.5\nBRCA1\t0.8\t-0.9"
-        ),
-        textInput(
-          "tools_2dgofcs_x_label",
-          "X-axis label",
-          value = "Score X"
-        ),
-        textInput(
-          "tools_2dgofcs_y_label",
-          "Y-axis label",
-          value = "Score Y"
+        tags$h4("Ranked Gene Lists"),
+        tags$p(class = "text-muted", "Enter two ranked gene lists (one gene per line, best/top-ranked first)."),
+        div(
+          style = "display: grid; grid-template-columns: 1fr 1fr; gap: 12px;",
+          div(
+            textAreaInput(
+              "tools_2dgofcs_genes_x",
+              "Ranked list X (one ID per line)",
+              rows = 8,
+              placeholder = "TP53\nEGFR\nBRCA1\nMYC"
+            ),
+            textInput(
+              "tools_2dgofcs_x_label",
+              "X-axis label",
+              value = "List X"
+            )
+          ),
+          div(
+            textAreaInput(
+              "tools_2dgofcs_genes_y",
+              "Ranked list Y (one ID per line)",
+              rows = 8,
+              placeholder = "KRAS\nPTEN\nTP53\nEGFR"
+            ),
+            textInput(
+              "tools_2dgofcs_y_label",
+              "Y-axis label",
+              value = "List Y"
+            )
+          )
         ),
         div(
           style = "display: flex; gap: 8px; margin-top: 5px;",
@@ -130,6 +143,13 @@ tools_2dgofcs_ui <- function() {
             "tools_2dgofcs_min_term_size",
             "Min term size",
             value = params_defaults$min_term_size %||% 5,
+            min = 1,
+            step = 1
+          ),
+          numericInput(
+            "tools_2dgofcs_min_overlap",
+            "Min overlap",
+            value = params_defaults$min_overlap %||% 5,
             min = 1,
             step = 1
           ),
@@ -262,40 +282,62 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
     # Reset parameter inputs to defaults
     updateNumericInput(session, "tools_2dgofcs_fdr_cutoff", value = defs_2dgofcs$params$fdr_cutoff %||% 0.03)
     updateNumericInput(session, "tools_2dgofcs_min_term_size", value = defs_2dgofcs$params$min_term_size %||% 5)
+    updateNumericInput(session, "tools_2dgofcs_min_overlap", value = defs_2dgofcs$params$min_overlap %||% 5)
     updateNumericInput(session, "tools_2dgofcs_max_terms", value = defs_2dgofcs$params$max_terms %||% 20)
-    updateTextAreaInput(session, "tools_2dgofcs_genes", value = "")
-    updateTextInput(session, "tools_2dgofcs_x_label", value = "Score X")
-    updateTextInput(session, "tools_2dgofcs_y_label", value = "Score Y")
+    updateTextAreaInput(session, "tools_2dgofcs_genes_x", value = "")
+    updateTextAreaInput(session, "tools_2dgofcs_genes_y", value = "")
+    updateTextInput(session, "tools_2dgofcs_x_label", value = "List X")
+    updateTextInput(session, "tools_2dgofcs_y_label", value = "List Y")
   }, ignoreInit = TRUE)
 
-  # Parse gene input with two scores for 2D GO-FCS
-  parse_gene_2score_input <- function(text) {
-    if (is.null(text) || !nzchar(text)) return(list(genes = character(0), scores_x = numeric(0), scores_y = numeric(0)))
-    lines <- unlist(strsplit(text, "\\r?\\n"))
-    lines <- trimws(lines)
-    lines <- lines[nzchar(lines)]
-
-    genes <- character(0)
-    scores_x <- numeric(0)
-    scores_y <- numeric(0)
-
-    for (line in lines) {
-      # Split by tab or comma
-      parts <- unlist(strsplit(line, "[\t,]"))
-      parts <- trimws(parts)
-      if (length(parts) >= 3) {
-        gene <- parts[1]
-        score_x <- suppressWarnings(as.numeric(parts[2]))
-        score_y <- suppressWarnings(as.numeric(parts[3]))
-        if (nzchar(gene) && !is.na(score_x) && !is.na(score_y)) {
-          genes <- c(genes, gene)
-          scores_x <- c(scores_x, score_x)
-          scores_y <- c(scores_y, score_y)
-        }
-      }
+  # Parse two ranked gene lists for 2D GO-FCS
+  # Input: two separate text inputs, each with one gene per line in ranked order
+  # Output: union of all genes with scores derived from rank position in each list
+  parse_ranked_lists_input <- function(text_x, text_y) {
+    parse_one_list <- function(text) {
+      if (is.null(text) || !nzchar(text)) return(character(0))
+      lines <- unlist(strsplit(text, "\\r?\\n"))
+      lines <- trimws(lines)
+      lines[nzchar(lines)]
     }
 
-    list(genes = genes, scores_x = scores_x, scores_y = scores_y)
+    genes_x <- parse_one_list(text_x)
+    genes_y <- parse_one_list(text_y)
+
+    if (length(genes_x) == 0 && length(genes_y) == 0) {
+      return(list(genes = character(0), scores_x = numeric(0), scores_y = numeric(0)))
+    }
+
+    # Get union of all genes
+    all_genes <- unique(c(genes_x, genes_y))
+
+    # Create score vectors: genes get scores based on their rank in each list
+    # Genes not in a list get score of 0 (middle/neutral)
+    # Top-ranked genes get positive scores, bottom-ranked get negative scores
+    compute_scores <- function(ranked_genes, all_genes) {
+      n <- length(ranked_genes)
+      if (n == 0) return(rep(0, length(all_genes)))
+
+      # Create named score vector for ranked genes
+      # Score from +n/2 (top) to -n/2 (bottom), centered around 0
+      rank_scores <- seq(from = n/2, to = -n/2, length.out = n)
+      names(rank_scores) <- ranked_genes
+
+      # Map to all genes (0 for genes not in list)
+      scores <- rep(0, length(all_genes))
+      names(scores) <- all_genes
+      for (g in ranked_genes) {
+        if (g %in% all_genes) {
+          scores[g] <- rank_scores[g]
+        }
+      }
+      as.numeric(scores)
+    }
+
+    scores_x <- compute_scores(genes_x, all_genes)
+    scores_y <- compute_scores(genes_y, all_genes)
+
+    list(genes = all_genes, scores_x = scores_x, scores_y = scores_y)
   }
 
   plot_dims_px_2dgofcs <- function() {
@@ -406,11 +448,11 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
       return()
     }
 
-    parsed <- parse_gene_2score_input(input$tools_2dgofcs_genes)
+    parsed <- parse_ranked_lists_input(input$tools_2dgofcs_genes_x, input$tools_2dgofcs_genes_y)
     rv_2dgofcs$input_count <- length(parsed$genes)
 
     if (length(parsed$genes) == 0) {
-      rv_2dgofcs$status_msg <- "Enter at least one gene with two scores to run 2D GO-FCS."
+      rv_2dgofcs$status_msg <- "Enter genes in at least one ranked list to run 2D GO-FCS."
       rv_2dgofcs$status_level <- "warn"
       rv_2dgofcs$run_status <- "idle"
       return()
@@ -426,6 +468,7 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
     params <- list(
       fdr_cutoff = safe_num(input$tools_2dgofcs_fdr_cutoff, defs_2dgofcs$params$fdr_cutoff %||% 0.03),
       min_term_size = safe_int(input$tools_2dgofcs_min_term_size, defs_2dgofcs$params$min_term_size %||% 5),
+      min_overlap = safe_int(input$tools_2dgofcs_min_overlap, defs_2dgofcs$params$min_overlap %||% 5),
       max_terms = safe_int(input$tools_2dgofcs_max_terms, defs_2dgofcs$params$max_terms %||% 20)
     )
 
@@ -632,7 +675,7 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
     tags$div(
       class = "card",
       tags$h4("2D GO-FCS summary"),
-      tags$p(sprintf("Input genes with scores: %s", ifelse(is.finite(n_input), n_input, "NA"))),
+      tags$p(sprintf("Input genes (union of lists): %s", ifelse(is.finite(n_input), n_input, "NA"))),
       tags$p(sprintf("Enriched terms: %s", n_terms)),
       if (!is.null(log_msg)) tags$p(log_msg)
     )

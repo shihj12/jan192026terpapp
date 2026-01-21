@@ -186,21 +186,37 @@ msterp_validate_formatted <- function(obj) {
   if (length(missing_keys) > 0) errors <- c(errors, paste0("Missing meta keys: ", paste(missing_keys, collapse = ", ")))
   
   # Analysis level validation:
-  # - Canonical casing is lowercase ("protein"/"peptide")
+  # - Canonical casing is lowercase ("protein"/"peptide"/"metabolite")
   # - For peptide-level formatted inputs, a protein ID column is still required so the pipeline can aggregate peptides to proteins.
+  # - For metabolite-level, a metabolite ID column is required instead of protein ID column.
   lvl <- meta_map[["analysis_level"]]
   lvl_normalized <- tolower(trimws(as.character(lvl %||% "")))
-  if (!lvl_normalized %in% c("protein", "peptide")) {
+  if (!lvl_normalized %in% c("protein", "peptide", "metabolite")) {
     errors <- c(errors, sprintf(
-      "Only 'protein' or 'peptide' levels are supported. Found: '%s'", lvl %||% "(missing)"
+      "Only 'protein', 'peptide', or 'metabolite' levels are supported. Found: '%s'", lvl %||% "(missing)"
     ))
   }
-  if (is.na(meta_map[["id_protein_col"]]) || !nzchar(meta_map[["id_protein_col"]])) {
-    errors <- c(errors, "Protein ID column is required (meta key id_protein_col must be non-empty).")
-  } else if (!is.null(obj$data) && is.data.frame(obj$data) && nrow(obj$data) > 0) {
-    prot_col <- as.character(meta_map[["id_protein_col"]])
-    if (nzchar(prot_col) && !prot_col %in% names(obj$data)) {
-      errors <- c(errors, sprintf("Protein ID column '%s' not found in data sheet.", prot_col))
+
+  # ID column requirements depend on analysis level
+  if (lvl_normalized == "metabolite") {
+    # Metabolite level: require id_metabolite_col
+    if (is.na(meta_map[["id_metabolite_col"]]) || !nzchar(meta_map[["id_metabolite_col"]])) {
+      errors <- c(errors, "Metabolite ID column is required for metabolite-level data (meta key id_metabolite_col must be non-empty).")
+    } else if (!is.null(obj$data) && is.data.frame(obj$data) && nrow(obj$data) > 0) {
+      metab_col <- as.character(meta_map[["id_metabolite_col"]])
+      if (nzchar(metab_col) && !metab_col %in% names(obj$data)) {
+        errors <- c(errors, sprintf("Metabolite ID column '%s' not found in data sheet.", metab_col))
+      }
+    }
+  } else {
+    # Protein/peptide level: require id_protein_col
+    if (is.na(meta_map[["id_protein_col"]]) || !nzchar(meta_map[["id_protein_col"]])) {
+      errors <- c(errors, "Protein ID column is required (meta key id_protein_col must be non-empty).")
+    } else if (!is.null(obj$data) && is.data.frame(obj$data) && nrow(obj$data) > 0) {
+      prot_col <- as.character(meta_map[["id_protein_col"]])
+      if (nzchar(prot_col) && !prot_col %in% names(obj$data)) {
+        errors <- c(errors, sprintf("Protein ID column '%s' not found in data sheet.", prot_col))
+      }
     }
   }
   

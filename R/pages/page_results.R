@@ -121,34 +121,50 @@ get_style_section <- function(field_name) {
   # =====================================================
   selector_fields <- c(
     "overlap_plot_type", "view_mode", "ontology_filter", "selected_group",
-    "plot_type", "layout", "transform", "acquisition_mode", "color_mode"
+    "plot_type", "layout", "transform", "acquisition_mode", "color_mode",
+    # Color mode variants that control downstream color field visibility
+    "bar_color_mode", "point_color_mode"
   )
   if (field_name %in% selector_fields) return(NULL)
 
   # =====================================================
   # LABELS section
   # Text labels, annotations, titles, font sizes, show/hide toggles for text
-
   # =====================================================
+  # Match fields primarily about text/labels, but exclude color/alpha fields that happen to contain "label"
+  # e.g., "label_font_size" -> Labels, but "count_labels_color" -> Graph Elements
   if (grepl("label|text|title|font|rotation", field_name, ignore.case = TRUE)) {
-    return("labels")
+    # Exclude fields that end with _color, _alpha, _width (these are styling, not label config)
+    if (!grepl("_color$|_alpha$|_width$", field_name, ignore.case = TRUE)) {
+      return("labels")
+    }
   }
-  # Specific label-related fields (show toggles for text elements)
+  # Specific label-related fields (show toggles for text elements, and their dependent fields)
   label_fields <- c(
     "show_rho", "show_equation", "show_n", "show_percentage", "show_group_names",
     "show_sig_labels", "show_summary_cards", "show_values", "venn_show_percentage",
-    "rho_position_x", "rho_position_y"
+    "rho_position_x", "rho_position_y",
+    # Venn diagram label-related fields
+    "venn_set_name_size",
+    # Mean display controls and their dependent type selector (must stay together for conditionalPanel)
+    "show_mean", "show_global_mean", "mean_type",
+    # Reference line/guide toggles and their dependent size fields (must stay together)
+    "show_ref_lines", "ref_line_size", "show_diagonal_guides", "diagonal_guide_size"
   )
   if (field_name %in% label_fields) return("labels")
 
   # =====================================================
   # AXIS ELEMENTS section
-  # Axis styling, ranges, min/max values, dimensions
+  # Axis styling, ranges, min/max values, dimensions (plot width/height only)
   # =====================================================
+  # Match axis config, range modes, and min/max values
+  # Note: ^x_|^y_|^xy_ matches x_min, y_max, xy_range_mode etc.
   if (grepl("axis|range|_min$|_max$|^x_|^y_|^xy_", field_name, ignore.case = TRUE)) {
     return("axis_elements")
   }
-  axis_fields <- c("width", "height", "pool")
+  # Explicit axis-related fields (plot dimensions, conditional min/max fields)
+  # Note: "width" and "height" here mean PLOT dimensions, not line widths
+  axis_fields <- c("width", "height", "pool", "ymax_protein", "ymin_protein")
   if (field_name %in% axis_fields) return("axis_elements")
 
   # =====================================================
@@ -1077,6 +1093,18 @@ res_wrap_conditionals <- function(node_id, field, ui) {
     cond <- sprintf("input['%s'] == true || input['%s'] == true", ctrl_show_mean, ctrl_show_global_mean)
   }
 
+  # 2DGOFCS: Reference line size only visible when show_ref_lines is enabled
+  if (fname == "ref_line_size") {
+    ctrl <- res_field_input_id(node_id, "show_ref_lines")
+    cond <- sprintf("input['%s'] == true", ctrl)
+  }
+
+  # 2DGOFCS: Diagonal guide size only visible when show_diagonal_guides is enabled
+  if (fname == "diagonal_guide_size") {
+    ctrl <- res_field_input_id(node_id, "show_diagonal_guides")
+    cond <- sprintf("input['%s'] == true", ctrl)
+  }
+
   # Hor_dis/Vert_dis: selected_group visibility is handled server-side (compare_mode is a params field, not a style input)
   # The selected_group_ui is only built when compare_mode == "within_groups" - see style panel renderUI
 
@@ -1165,10 +1193,18 @@ page_results_ui <- function() {
         })();
       ")),
       tags$script(HTML("
-        // Collapsible section toggle handler
+        // Collapsible section toggle handler - preserves state across re-renders
         $(document).on('click', '.collapse-header', function(e) {
           e.stopPropagation();
-          $(this).closest('.collapse-section').toggleClass('open');
+          var $section = $(this).closest('.collapse-section');
+          $section.toggleClass('open');
+
+          // Report accordion state to Shiny for persistence
+          var sectionId = $section.attr('id');
+          var isOpen = $section.hasClass('open');
+          if (sectionId && Shiny.setInputValue) {
+            Shiny.setInputValue('res_accordion_state', {id: sectionId, open: isOpen}, {priority: 'event'});
+          }
         });
       ")),
       tags$style(HTML("
@@ -2271,9 +2307,18 @@ page_results_server <- function(input, output, session) {
     preview_dpi = 150L,  # Preview-only DPI (publication export uses separate download/export settings)
     label_selected = list(id = NULL, plot_key = NULL, eng = NULL),
     hover_info_by_plot = list(),
-    switching_node = FALSE  # FIX: Flag to prevent false dirty detection during node switch
+    switching_node = FALSE,  # FIX: Flag to prevent false dirty detection during node switch
+    accordion_state = list()  # Track open/closed state of style accordion sections
   )
   style_rev <- reactiveVal(0L)
+
+  # ---- Accordion state persistence -------------------------------------------
+  observeEvent(input$res_accordion_state, {
+    state <- input$res_accordion_state
+    if (!is.null(state$id) && !is.null(state$open)) {
+      rv$accordion_state[[state$id]] <- state$open
+    }
+  }, ignoreNULL = TRUE, ignoreInit = TRUE)
 
   # ---- DPI observer: sync input$res_preview_dpi -> rv$preview_dpi ------------
   observeEvent(input$res_preview_dpi, {
@@ -4044,12 +4089,18 @@ page_results_server <- function(input, output, session) {
         res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
       }))
 
+      # Determine open state: use persisted state if available, else default
+      # Use isolate() to prevent accordion state changes from triggering re-render
+      section_id <- paste0("style_section_", section_name)
+      persisted_open <- isolate(rv$accordion_state[[section_id]])
+      is_open <- if (!is.null(persisted_open)) persisted_open else isTRUE(section_def$open)
+
       # Create collapsible section with field count badge
       res_collapse_section_ui(
-        id = paste0("style_section_", section_name),
+        id = section_id,
         title = section_def$title,
         badge_text = as.character(length(fields_in_section)),
-        open = isTRUE(section_def$open),
+        open = is_open,
         field_uis
       )
     }))

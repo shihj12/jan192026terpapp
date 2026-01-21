@@ -1,54 +1,16 @@
-# R/pages/tools/tool_goora.R
-# GO-ORA Tool - Gene Ontology Over-Representation Analysis
+# R/pages/tools/tool_msea.R
+# MSEA Tool - Metabolite Set Enrichment Analysis (Pathway Over-Representation)
 
-tools_goora_defaults <- function() {
-
-  eng <- msterp_engine_get("goora")
+tools_msea_defaults <- function() {
+  eng <- msterp_engine_get("msea")
   list(
     params = msterp_schema_defaults(eng$params_schema %||% list()),
     style = msterp_schema_defaults(eng$style_schema %||% list())
   )
 }
 
-# Build protein_to_go and go_terms from annot_long if not already present
-# This mirrors the logic in run_utils.R for pipeline execution
-tools_ensure_terpbase_go_mappings <- function(tb) {
-  if (is.null(tb)) return(tb)
-
-
-  # Build protein_to_go from annot_long if missing
-  if (is.null(tb$protein_to_go) && !is.null(tb$annot_long)) {
-    annot <- tb$annot_long
-    if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
-      genes <- unique(annot$gene)
-      protein_to_go <- lapply(genes, function(g) {
-        unique(annot$ID[annot$gene == g])
-      })
-      names(protein_to_go) <- genes
-      tb$protein_to_go <- protein_to_go
-    }
-  }
-
-  # Build go_terms from terms_by_id if missing
-  if (is.null(tb$go_terms) && !is.null(tb$terms_by_id)) {
-    terms <- tb$terms_by_id
-    if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
-      go_terms <- lapply(seq_len(nrow(terms)), function(i) {
-        list(
-          name = terms$Description[i],
-          ontology = terms$ONTOLOGY[i]
-        )
-      })
-      names(go_terms) <- terms$ID
-      tb$go_terms <- go_terms
-    }
-  }
-
-  tb
-}
-
 # Safe input ID generator (matches res_safe_input_id from page_results.R)
-tools_safe_input_id <- function(x) {
+tools_msea_safe_input_id <- function(x) {
   x <- as.character(x %||% "")
   x <- gsub("[^A-Za-z0-9_]", "_", x)
   x <- gsub("_+", "_", x)
@@ -57,16 +19,15 @@ tools_safe_input_id <- function(x) {
   x
 }
 
-# Helper function to create editable GO table UI for tools page
-# Matches res_editable_go_table_ui from page_results.R exactly
-tools_go_editable_table_ui <- function(
+# Helper function to create editable pathway table UI for tools page
+tools_msea_editable_table_ui <- function(
     id_prefix,
     df,
-    term_id_col = "term_id",
-    term_name_col = "term_name",
+    term_id_col = "pathway_id",
+    term_name_col = "pathway_name",
     hidden_term_ids = character(),
     term_labels_by_id = list(),
-    gene_col_data = NULL
+    metabolite_col_data = NULL
 ) {
   if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
     return(div(class = "text-muted", "No terms to display."))
@@ -79,17 +40,16 @@ tools_go_editable_table_ui <- function(
   cols <- names(df)
 
   # Columns to hide from display (but still available in data)
-  hide_cols <- c("genes", "gene_ids", "geneID", "protein_ids", "core_enrichment", "Genes",
-                 "neglog10_fdr", "neglog10fdr", "n_term", "ontology", "score")
+  hide_cols <- c("metabolite_ids", "neglog10_fdr", "neglog10fdr", "n_term")
 
-  # Build header: Visible, term_id, term_name, Search, then other columns
+  # Build header: Visible, pathway_id, pathway_name, Search, then other columns
   other_cols <- setdiff(cols, c(term_id_col, term_name_col, hide_cols))
-  has_search <- !is.null(gene_col_data) && length(gene_col_data) == nrow(df)
+  has_search <- !is.null(metabolite_col_data) && length(metabolite_col_data) == nrow(df)
   header_cols <- c("Visible", term_id_col, term_name_col, if (has_search) "Search" else NULL, other_cols)
 
   rows <- lapply(seq_len(nrow(df)), function(i) {
     term_id <- as.character(term_ids[[i]] %||% "")
-    safe_term_id <- tools_safe_input_id(term_id)
+    safe_term_id <- tools_msea_safe_input_id(term_id)
 
     vis_id <- paste0(id_prefix, "_vis_", safe_term_id)
     name_id <- paste0(id_prefix, "_name_", safe_term_id)
@@ -99,20 +59,20 @@ tools_go_editable_table_ui <- function(
 
     visible <- !(term_id %in% hidden_term_ids)
 
-    # Build Search button HTML if gene data available
+    # Build Search button HTML if metabolite data available
     search_btn <- NULL
     if (has_search) {
-      genes <- as.character(gene_col_data[[i]] %||% "")
-      genes_clean <- gsub("[,;|/]", "\n", genes)
-      genes_clean <- gsub("\n+", "\n", genes_clean)
-      genes_clean <- trimws(genes_clean)
+      metabolites <- as.character(metabolite_col_data[[i]] %||% "")
+      metabolites_clean <- gsub("[,;|/]", "\n", metabolites)
+      metabolites_clean <- gsub("\n+", "\n", metabolites_clean)
+      metabolites_clean <- trimws(metabolites_clean)
       safe_term <- gsub("'", "&#39;", gsub('"', "&quot;", gsub("<", "&lt;", gsub(">", "&gt;", gsub("&", "&amp;", display_name)))))
-      safe_genes <- gsub("'", "&#39;", gsub('"', "&quot;", gsub("<", "&lt;", gsub(">", "&gt;", gsub("&", "&amp;", genes_clean)))))
+      safe_metabolites <- gsub("'", "&#39;", gsub('"', "&quot;", gsub("<", "&lt;", gsub(">", "&gt;", gsub("&", "&amp;", metabolites_clean)))))
       search_btn <- tags$td(
         style = "text-align: center;",
         HTML(sprintf(
-          '<button type="button" class="btn btn-xs btn-info go-search-genes-btn" data-term="%s" data-genes="%s" title="Search genes in UniProt"><i class="fa fa-search"></i></button>',
-          safe_term, safe_genes
+          '<button type="button" class="btn btn-xs btn-info msea-search-metabolites-btn" data-term="%s" data-metabolites="%s" title="Search metabolites in HMDB"><i class="fa fa-search"></i></button>',
+          safe_term, safe_metabolites
         ))
       )
     }
@@ -152,12 +112,12 @@ tools_go_editable_table_ui <- function(
   })
 
   div(
-    class = "tools-editable-go-table",
+    class = "tools-editable-msea-table",
     # Add CSS to constrain checkbox width
     tags$style(HTML("
-      .tools-editable-go-table .form-group { margin-bottom: 0; }
-      .tools-editable-go-table .checkbox { margin: 0; padding: 0; min-height: 0; }
-      .tools-editable-go-table input[type='checkbox'] { margin: 0; }
+      .tools-editable-msea-table .form-group { margin-bottom: 0; }
+      .tools-editable-msea-table .checkbox { margin: 0; padding: 0; min-height: 0; }
+      .tools-editable-msea-table input[type='checkbox'] { margin: 0; }
     ")),
     tags$div(style = "overflow-x: auto; max-height: 400px; overflow-y: auto;",
              tags$table(
@@ -178,11 +138,11 @@ tools_go_editable_table_ui <- function(
   )
 }
 
-# Bind observers for editable GO table (matches res_bind_editable_go_table)
-tools_bind_editable_go_table <- function(
+# Bind observers for editable pathway table
+tools_msea_bind_editable_table <- function(
     id_prefix,
     df,
-    term_id_col = "term_id",
+    term_id_col = "pathway_id",
     input,
     session,
     on_term_name_change = NULL,
@@ -191,10 +151,10 @@ tools_bind_editable_go_table <- function(
   if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(invisible(NULL))
   if (!(term_id_col %in% names(df))) return(invisible(NULL))
 
-  if (is.null(session$userData$tools_editable_go_table_bound)) {
-    session$userData$tools_editable_go_table_bound <- new.env(parent = emptyenv())
+  if (is.null(session$userData$tools_editable_msea_table_bound)) {
+    session$userData$tools_editable_msea_table_bound <- new.env(parent = emptyenv())
   }
-  bound <- session$userData$tools_editable_go_table_bound
+  bound <- session$userData$tools_editable_msea_table_bound
 
   term_ids <- unique(as.character(df[[term_id_col]]))
   term_ids <- term_ids[nzchar(term_ids)]
@@ -202,7 +162,7 @@ tools_bind_editable_go_table <- function(
   for (term_id in term_ids) {
     local({
       term_id_local <- term_id
-      safe_term_id <- tools_safe_input_id(term_id_local)
+      safe_term_id <- tools_msea_safe_input_id(term_id_local)
       vis_id <- paste0(id_prefix, "_vis_", safe_term_id)
       name_id <- paste0(id_prefix, "_name_", safe_term_id)
 
@@ -232,92 +192,39 @@ tools_bind_editable_go_table <- function(
 }
 
 # ============================================================
-# GO-ORA Tool UI
+# MSEA Tool UI
 # ============================================================
-tools_goora_ui <- function() {
-  defs <- tools_goora_defaults()
+tools_msea_ui <- function() {
+  defs <- tools_msea_defaults()
   params_defaults <- defs$params %||% list()
   style_defaults <- defs$style %||% list()
 
   tagList(
-    # JavaScript handlers for UniProt search and copy plot
+    # JavaScript handlers for HMDB search and copy plot
     tags$head(
       tags$script(HTML("
-        // UniProt gene search button handler for tools page
-        if (window.Shiny && !window.__tools_go_search_genes) {
-          window.__tools_go_search_genes = true;
-          $(document).on('click', '.go-search-genes-btn', function(e) {
+        // HMDB metabolite search button handler for tools page
+        if (window.Shiny && !window.__tools_msea_search_metabolites) {
+          window.__tools_msea_search_metabolites = true;
+          $(document).on('click', '.msea-search-metabolites-btn', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            var btn = e.target.closest('.go-search-genes-btn');
+            var btn = e.target.closest('.msea-search-metabolites-btn');
             if (!btn) return;
             var term = btn.getAttribute('data-term') || '';
-            var genes = btn.getAttribute('data-genes') || '';
-            if (!genes) return;
-            // Send to Shiny for UniProt lookup
-            Shiny.setInputValue('tools_go_search_genes_click', {
+            var metabolites = btn.getAttribute('data-metabolites') || '';
+            if (!metabolites) return;
+            // Send to Shiny for HMDB lookup
+            Shiny.setInputValue('tools_msea_search_metabolites_click', {
               term: term,
-              genes: genes,
+              metabolites: metabolites,
               ts: Date.now()
             });
           });
         }
       ")),
-      tags$script(HTML("
-        // Open URL in new tab handler
-        Shiny.addCustomMessageHandler('tools_open_url', function(payload) {
-          if (payload && payload.url) {
-            window.open(payload.url, '_blank');
-          }
-        });
-      ")),
-      tags$script(HTML("
-        // Copy plot handler for tools page
-        Shiny.addCustomMessageHandler('tools_copy_plot', function(payload) {
-          var plotId = payload && payload.id ? payload.id : null;
-          if (!plotId) return;
-
-          var container = document.getElementById(plotId);
-          var img = container ? container.querySelector('img') : null;
-
-          function showNotification(msg, type) {
-            Shiny.notifications.show({
-              html: '<span>' + msg + '</span>',
-              type: type,
-              duration: 3000
-            });
-          }
-
-          if (!img || !img.src) {
-            showNotification('Plot not ready yet. Try again.', 'error');
-            return;
-          }
-
-          if (!navigator.clipboard || !window.ClipboardItem) {
-            showNotification('Clipboard API not available in this browser.', 'error');
-            return;
-          }
-
-          fetch(img.src)
-            .then(function(res) { return res.blob(); })
-            .then(function(blob) {
-              var item = new ClipboardItem({ [blob.type]: blob });
-              return navigator.clipboard.write([item]);
-            })
-            .then(function() {
-              var w = img.naturalWidth || 0;
-              var h = img.naturalHeight || 0;
-              var label = (w && h) ? ('Copied plot (' + w + ' x ' + h + ' px).') : 'Copied plot to clipboard.';
-              showNotification(label, 'message');
-            })
-            .catch(function(err) {
-              showNotification('Copy failed. Check browser permissions.', 'error');
-              if (window.console && console.error) console.error(err);
-            });
-        });
-      ")),
       tags$style(HTML("
-        .go-search-genes-btn {
+        .msea-search-metabolites-btn {
           padding: 2px 6px;
           font-size: 11px;
           cursor: pointer;
@@ -345,67 +252,57 @@ tools_goora_ui <- function() {
           font-size: 12px;
           height: auto;
         }
-        .go-term-hidden-row {
-          opacity: 0.5;
-          background-color: #f5f5f5 !important;
-        }
       "))
     ),
     div(
       class = "top",
-      actionButton("tools_goora_back", "Back to Tools", class = "btn btn-default"),
-      tags$h3("GO-ORA", style = "margin: 0;")
+      actionButton("tools_msea_back", "Back to Tools", class = "btn btn-default"),
+      tags$h3("MSEA (Pathway Enrichment)", style = "margin: 0;")
     ),
-    tags$p("Paste a gene list to run GO over-representation analysis against a TerpBase."),
+    tags$p("Paste a metabolite list to run pathway over-representation analysis against a MetaboBase."),
     two_panel_ui(
       left_ui = tagList(
-        tags$h4("TerpBase"),
-        uiOutput("tools_goora_terpbase_status"),
-        selectInput(
-          "tools_goora_terpbase_default_path",
-          "Default TerpBase",
-          choices = tools_default_terpbase_choices(),
-          selected = ""
-        ),
-        actionButton(
-          "tools_goora_terpbase_default_load",
-          "Load default",
-          class = "btn btn-default btn-sm btn-tool-action"
-        ),
+        tags$h4("MetaboBase"),
+        uiOutput("tools_msea_metabobase_status"),
         fileInput(
-          "tools_goora_terpbase_file",
-          "Load TerpBase (.terpbase)",
-          accept = c(".terpbase", ".rds"),
+          "tools_msea_metabobase_file",
+          "Load MetaboBase (.metabobase or .rds)",
+          accept = c(".metabobase", ".rds"),
           placeholder = "No file selected"
         ),
         hr(),
-        tags$h4("Gene Input"),
+        tags$h4("Metabolite Input"),
         textAreaInput(
-          "tools_goora_genes",
-          "Gene list (one per line)",
+          "tools_msea_metabolites",
+          "Metabolite ID list (one per line)",
           rows = 10,
-          placeholder = "TP53\nEGFR\nBRCA1"
+          placeholder = "HMDB0000001\nHMDB0000039\nC00001\nC00002"
         ),
         div(
           style = "display: flex; gap: 8px; margin-top: 5px;",
-          actionButton("tools_goora_run", "Run GO-ORA", class = "btn-primary btn-tool-action"),
-          actionButton("tools_goora_reset", "Reset", class = "btn btn-default btn-tool-action")
+          actionButton("tools_msea_run", "Run MSEA", class = "btn-primary btn-tool-action"),
+          actionButton("tools_msea_reset", "Reset", class = "btn btn-default btn-tool-action")
         ),
         hr(),
         tags$h4("View"),
         selectInput(
-          "tools_goora_ontology_view",
-          "Ontology",
-          choices = c("Biological Process" = "BP",
-                      "Molecular Function" = "MF", "Cellular Component" = "CC"),
-          selected = "BP"
+          "tools_msea_pathway_db_view",
+          "Pathway Database",
+          choices = c("All" = "all", "KEGG" = "kegg", "Reactome" = "reactome"),
+          selected = "all"
         ),
         tools_collapse_section_ui(
-          "tools_goora_params_section",
+          "tools_msea_params_section",
           "Parameters",
           open = FALSE,
+          selectInput(
+            "tools_msea_pathway_db",
+            "Pathway database for analysis",
+            choices = c("All" = "all", "KEGG" = "kegg", "Reactome" = "reactome"),
+            selected = params_defaults$pathway_db %||% "all"
+          ),
           numericInput(
-            "tools_goora_fdr_cutoff",
+            "tools_msea_fdr_cutoff",
             "FDR cutoff",
             value = params_defaults$fdr_cutoff %||% 0.05,
             min = 0,
@@ -413,22 +310,22 @@ tools_goora_ui <- function() {
             step = 0.001
           ),
           numericInput(
-            "tools_goora_min_term_size",
-            "Min term size",
-            value = params_defaults$min_term_size %||% 5,
+            "tools_msea_min_pathway_size",
+            "Min pathway size",
+            value = params_defaults$min_pathway_size %||% 3,
             min = 1,
             step = 1
           ),
           numericInput(
-            "tools_goora_min_overlap",
+            "tools_msea_min_overlap",
             "Min overlap",
-            value = params_defaults$min_overlap %||% 3,
+            value = params_defaults$min_overlap %||% 2,
             min = 1,
             step = 1
           ),
           numericInput(
-            "tools_goora_max_terms",
-            "Terms to show (per ontology)",
+            "tools_msea_max_terms",
+            "Terms to show (per database)",
             value = params_defaults$max_terms %||% 20,
             min = 1,
             max = 200,
@@ -436,40 +333,40 @@ tools_goora_ui <- function() {
           )
         ),
         tools_collapse_section_ui(
-          "tools_goora_plot_section",
+          "tools_msea_plot_section",
           "Plot Options",
           open = FALSE,
           selectInput(
-            "tools_goora_plot_type",
+            "tools_msea_plot_type",
             "Plot type",
             choices = c("bar", "dot"),
             selected = style_defaults$plot_type %||% "bar"
           ),
           selectInput(
-            "tools_goora_color_mode",
+            "tools_msea_color_mode",
             "Coloring",
             choices = c("fdr", "flat"),
             selected = style_defaults$color_mode %||% "fdr"
           ),
           conditionalPanel(
-            condition = "input.tools_goora_color_mode == 'fdr'",
+            condition = "input.tools_msea_color_mode == 'fdr'",
             selectInput(
-              "tools_goora_fdr_palette",
+              "tools_msea_fdr_palette",
               "FDR color palette",
               choices = c("yellow_cap" = "Yellow (significant)", "blue_red" = "Blue-Red"),
               selected = style_defaults$fdr_palette %||% "yellow_cap"
             )
           ),
           conditionalPanel(
-            condition = "input.tools_goora_color_mode == 'flat'",
+            condition = "input.tools_msea_color_mode == 'flat'",
             textInput(
-              "tools_goora_flat_color",
+              "tools_msea_flat_color",
               "Flat color (hex)",
               value = style_defaults$flat_color %||% "#B0B0B0"
             )
           ),
           sliderInput(
-            "tools_goora_alpha",
+            "tools_msea_alpha",
             "Opacity",
             min = 0,
             max = 1,
@@ -477,17 +374,17 @@ tools_goora_ui <- function() {
             step = 0.05
           ),
           checkboxInput(
-            "tools_goora_show_go_id",
-            "Show GO ID in labels",
-            value = isTRUE(style_defaults$show_go_id %||% FALSE)
+            "tools_msea_show_pathway_id",
+            "Show pathway ID in labels",
+            value = isTRUE(style_defaults$show_pathway_id %||% FALSE)
           ),
           checkboxInput(
-            "tools_goora_flip_axis",
+            "tools_msea_flip_axis",
             "Flip horizontal axis",
             value = FALSE
           ),
           numericInput(
-            "tools_goora_font_size",
+            "tools_msea_font_size",
             "Font size",
             value = style_defaults$font_size %||% 14,
             min = 6,
@@ -495,7 +392,7 @@ tools_goora_ui <- function() {
             step = 1
           ),
           numericInput(
-            "tools_goora_axis_text_size",
+            "tools_msea_axis_text_size",
             "Axis text size",
             value = style_defaults$axis_text_size %||% 20,
             min = 6,
@@ -503,17 +400,17 @@ tools_goora_ui <- function() {
             step = 1
           ),
           numericInput(
-            "tools_goora_width",
+            "tools_msea_width",
             "Plot width (in)",
-            value = style_defaults$width %||% 12,
+            value = style_defaults$width %||% 10,
             min = 2,
             max = 24,
             step = 0.5
           ),
           numericInput(
-            "tools_goora_height",
+            "tools_msea_height",
             "Plot height (in)",
-            value = style_defaults$height %||% 6,
+            value = style_defaults$height %||% 8,
             min = 2,
             max = 24,
             step = 0.5
@@ -522,17 +419,17 @@ tools_goora_ui <- function() {
       ),
       right_ui = div(
         class = "tool-results",
-        uiOutput("tools_goora_summary"),
-        uiOutput("tools_goora_tabs")
+        uiOutput("tools_msea_summary"),
+        uiOutput("tools_msea_tabs")
       )
     )
   )
 }
 
 # ============================================================
-# GO-ORA Server Logic
+# MSEA Server Logic
 # ============================================================
-tools_goora_server <- function(input, output, session, app_state, rv, defs_goora) {
+tools_msea_server <- function(input, output, session, app_state, rv, defs_msea) {
   safe_num <- function(x, default) {
     v <- suppressWarnings(as.numeric(x))
     if (!is.finite(v)) default else v
@@ -543,7 +440,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     if (!is.finite(v) || v <= 0) default else v
   }
 
-  parse_gene_input <- function(text) {
+  parse_metabolite_input <- function(text) {
     if (is.null(text) || !nzchar(text)) return(character(0))
     lines <- unlist(strsplit(text, "\\r?\\n"))
     parts <- unlist(strsplit(lines, "[,;]"))
@@ -554,8 +451,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
   plot_dims_px <- function() {
     dpi <- 150
-    w_in <- safe_num(input$tools_goora_width, defs_goora$style$width %||% 12)
-    h_in <- safe_num(input$tools_goora_height, defs_goora$style$height %||% 6)
+    w_in <- safe_num(input$tools_msea_width, defs_msea$style$width %||% 10)
+    h_in <- safe_num(input$tools_msea_height, defs_msea$style$height %||% 8)
 
     max_px <- 2600
     w_px <- as.integer(round(w_in * dpi))
@@ -569,7 +466,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   }
 
   # Reset button handler - clears results and resets parameters
-  observeEvent(input$tools_goora_reset, {
+  observeEvent(input$tools_msea_reset, {
     rv$results <- NULL
     rv$rendered <- NULL
     rv$status_msg <- NULL
@@ -577,66 +474,94 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     rv$input_count <- NULL
     rv$hidden_terms <- character()
     rv$term_labels <- list()
-    # Clear stored parameters so they don't get restored on navigation
     rv$stored_params <- NULL
-    rv$stored_genes <- NULL
+    rv$stored_metabolites <- NULL
 
     # Reset parameter inputs to defaults
-    updateNumericInput(session, "tools_goora_fdr_cutoff", value = defs_goora$params$fdr_cutoff %||% 0.05)
-    updateNumericInput(session, "tools_goora_min_term_size", value = defs_goora$params$min_term_size %||% 5)
-    updateNumericInput(session, "tools_goora_min_overlap", value = defs_goora$params$min_overlap %||% 3)
-    updateNumericInput(session, "tools_goora_max_terms", value = defs_goora$params$max_terms %||% 20)
-    updateTextAreaInput(session, "tools_goora_genes", value = "")
+    updateNumericInput(session, "tools_msea_fdr_cutoff", value = defs_msea$params$fdr_cutoff %||% 0.05)
+    updateNumericInput(session, "tools_msea_min_pathway_size", value = defs_msea$params$min_pathway_size %||% 3)
+    updateNumericInput(session, "tools_msea_min_overlap", value = defs_msea$params$min_overlap %||% 2)
+    updateNumericInput(session, "tools_msea_max_terms", value = defs_msea$params$max_terms %||% 20)
+    updateTextAreaInput(session, "tools_msea_metabolites", value = "")
   }, ignoreInit = TRUE)
 
-  # Handle UniProt gene search button clicks
-  observeEvent(input$tools_go_search_genes_click, {
-    req(input$tools_go_search_genes_click)
-    genes <- input$tools_go_search_genes_click$genes
-    term <- input$tools_go_search_genes_click$term
+  # Handle HMDB metabolite search button clicks
+  observeEvent(input$tools_msea_search_metabolites_click, {
+    req(input$tools_msea_search_metabolites_click)
+    metabolites <- input$tools_msea_search_metabolites_click$metabolites
 
-    if (!nzchar(genes)) return()
+    if (!nzchar(metabolites)) return()
 
-    # Split genes and build UniProt search URL
-    gene_list <- unlist(strsplit(genes, "\n"))
-    gene_list <- trimws(gene_list)
-    gene_list <- gene_list[nzchar(gene_list)]
+    # Split metabolites and build HMDB search URL
+    metabolite_list <- unlist(strsplit(metabolites, "\n"))
+    metabolite_list <- trimws(metabolite_list)
+    metabolite_list <- metabolite_list[nzchar(metabolite_list)]
 
-    if (length(gene_list) == 0) return()
+    if (length(metabolite_list) == 0) return()
 
-    # Open UniProt search in new tab
-    query <- paste(gene_list, collapse = " OR ")
-    url <- paste0("https://www.uniprot.org/uniprotkb?query=", utils::URLencode(query, reserved = TRUE))
+    # For HMDB IDs, open search; for others, try KEGG
+    first_id <- metabolite_list[1]
+    if (grepl("^HMDB", first_id, ignore.case = TRUE)) {
+      # Open first HMDB ID directly
+      url <- paste0("https://hmdb.ca/metabolites/", toupper(first_id))
+    } else if (grepl("^C\\d{5}$", first_id)) {
+      # KEGG compound
+      url <- paste0("https://www.genome.jp/entry/", first_id)
+    } else {
+      # Generic search
+      query <- paste(metabolite_list[1:min(3, length(metabolite_list))], collapse = " ")
+      url <- paste0("https://hmdb.ca/unearth/q?query=", utils::URLencode(query, reserved = TRUE))
+    }
 
-    # Use JavaScript to open URL
     session$sendCustomMessage("tools_open_url", list(url = url))
   }, ignoreInit = TRUE)
 
-  output$tools_goora_terpbase_status <- renderUI({
-    tb <- app_state$terpbase
-    if (is.null(tb)) {
+  # Load MetaboBase from file
+  observeEvent(input$tools_msea_metabobase_file, {
+    req(input$tools_msea_metabobase_file)
+    path <- input$tools_msea_metabobase_file$datapath
+
+    tryCatch({
+      mb <- readRDS(path)
+      # Validate it's a metabobase
+      v <- metabobase_validate(mb)
+      if (!v$ok) {
+        rv$status_msg <- paste("Invalid MetaboBase:", paste(v$errors, collapse = "; "))
+        rv$status_level <- "error"
+        return()
+      }
+      app_state$metabobase <- mb
+      rv$status_msg <- "MetaboBase loaded successfully."
+      rv$status_level <- "info"
+    }, error = function(e) {
+      rv$status_msg <- paste("Error loading MetaboBase:", conditionMessage(e))
+      rv$status_level <- "error"
+    })
+  }, ignoreInit = TRUE)
+
+  output$tools_msea_metabobase_status <- renderUI({
+    mb <- app_state$metabobase
+    if (is.null(mb)) {
       return(tags$div(
         class = "text-danger",
-        "No TerpBase loaded. Load one above or build one in the TerpBase page."
+        "No MetaboBase loaded. Load one above or build one in the Database page."
       ))
     }
 
-    library_name <- tb$library_name %||% "(unnamed)"
-    organism <- tb$organism %||% "(unknown)"
-    n_ids <- NA_integer_
-    if (!is.null(tb$annot_long) && "gene" %in% names(tb$annot_long)) {
-      n_ids <- length(unique(tb$annot_long$gene))
-    }
+    library_name <- mb$library_name %||% "(unnamed)"
+    n_metabolites <- mb$n_metabolites %||% NA_integer_
+    n_pathways <- if (!is.null(mb$terms_by_id) && is.data.frame(mb$terms_by_id)) nrow(mb$terms_by_id) else NA_integer_
 
     tags$div(
       class = "text-muted",
-      tags$strong("Active TerpBase:"),
+      tags$strong("Active MetaboBase:"),
       " ",
       library_name,
-      tags$br(),
-      sprintf("Organism: %s", organism),
-      if (is.finite(n_ids)) {
-        tags$div(sprintf("Unique identifiers: %s", n_ids))
+      if (is.finite(n_metabolites)) {
+        tags$div(sprintf("Metabolites: %s", n_metabolites))
+      },
+      if (is.finite(n_pathways)) {
+        tags$div(sprintf("Pathways: %s", n_pathways))
       }
     )
   })
@@ -648,7 +573,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   }
 
   # Reactive for polling progress.json
-  progress_goora_rx <- reactive({
+  progress_msea_rx <- reactive({
     if (identical(rv$run_status, "running")) {
       invalidateLater(500, session)
     }
@@ -666,7 +591,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
       if (isTRUE(result$ok)) {
         rv$results <- result$result
-        rv$rendered <- tb_render_goora(result$result, rv$pending_style, meta = NULL)
+        rv$rendered <- tb_render_msea(result$result, rv$pending_style, meta = NULL)
         rv$run_status <- "done"
         rv$status_msg <- NULL
       } else {
@@ -683,7 +608,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     }
   })
 
-  observeEvent(input$tools_goora_run, {
+  observeEvent(input$tools_msea_run, {
     # Only reset status and results, preserve parameters
     rv$status_msg <- NULL
     rv$status_level <- NULL
@@ -694,49 +619,50 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     rv$hidden_terms <- character()
     rv$term_labels <- list()
 
-    tb <- app_state$terpbase
-    if (is.null(tb)) {
-      rv$status_msg <- "No TerpBase loaded. Load one above or build one in the TerpBase page."
+    mb <- app_state$metabobase
+    if (is.null(mb)) {
+      rv$status_msg <- "No MetaboBase loaded. Load one above or build one in the Database page."
       rv$status_level <- "error"
       rv$run_status <- "idle"
       return()
     }
 
-    genes <- parse_gene_input(input$tools_goora_genes)
-    rv$input_count <- length(genes)
+    metabolites <- parse_metabolite_input(input$tools_msea_metabolites)
+    rv$input_count <- length(metabolites)
 
-    if (length(genes) == 0) {
-      rv$status_msg <- "Enter at least one gene symbol to run GO-ORA."
+    if (length(metabolites) == 0) {
+      rv$status_msg <- "Enter at least one metabolite ID to run MSEA."
       rv$status_level <- "warn"
       rv$run_status <- "idle"
       return()
     }
 
-    # Collect params and style from inputs (lightweight)
+    # Collect params and style from inputs
     params <- list(
-      fdr_cutoff = safe_num(input$tools_goora_fdr_cutoff, defs_goora$params$fdr_cutoff %||% 0.05),
-      min_term_size = safe_int(input$tools_goora_min_term_size, defs_goora$params$min_term_size %||% 5),
-      min_overlap = safe_int(input$tools_goora_min_overlap, defs_goora$params$min_overlap %||% 3),
-      max_terms = safe_int(input$tools_goora_max_terms, defs_goora$params$max_terms %||% 20)
+      pathway_db = input$tools_msea_pathway_db %||% defs_msea$params$pathway_db %||% "all",
+      fdr_cutoff = safe_num(input$tools_msea_fdr_cutoff, defs_msea$params$fdr_cutoff %||% 0.05),
+      min_pathway_size = safe_int(input$tools_msea_min_pathway_size, defs_msea$params$min_pathway_size %||% 3),
+      min_overlap = safe_int(input$tools_msea_min_overlap, defs_msea$params$min_overlap %||% 2),
+      max_terms = safe_int(input$tools_msea_max_terms, defs_msea$params$max_terms %||% 20)
     )
 
     style <- list(
-      plot_type = input$tools_goora_plot_type %||% defs_goora$style$plot_type %||% "bar",
-      color_mode = input$tools_goora_color_mode %||% defs_goora$style$color_mode %||% "fdr",
-      fdr_palette = input$tools_goora_fdr_palette %||% defs_goora$style$fdr_palette %||% "yellow_cap",
-      flat_color = if (nzchar(input$tools_goora_flat_color %||% "")) {
-        input$tools_goora_flat_color
+      plot_type = input$tools_msea_plot_type %||% defs_msea$style$plot_type %||% "bar",
+      color_mode = input$tools_msea_color_mode %||% defs_msea$style$color_mode %||% "fdr",
+      fdr_palette = input$tools_msea_fdr_palette %||% defs_msea$style$fdr_palette %||% "yellow_cap",
+      flat_color = if (nzchar(input$tools_msea_flat_color %||% "")) {
+        input$tools_msea_flat_color
       } else {
-        defs_goora$style$flat_color %||% "#B0B0B0"
+        defs_msea$style$flat_color %||% "#B0B0B0"
       },
-      alpha = safe_num(input$tools_goora_alpha, defs_goora$style$alpha %||% 0.8),
-      show_go_id = isTRUE(input$tools_goora_show_go_id),
-      font_size = safe_int(input$tools_goora_font_size, defs_goora$style$font_size %||% 14),
-      axis_text_size = safe_int(input$tools_goora_axis_text_size, defs_goora$style$axis_text_size %||% 20),
-      width = safe_num(input$tools_goora_width, defs_goora$style$width %||% 12),
-      height = safe_num(input$tools_goora_height, defs_goora$style$height %||% 6),
-      flip_axis = isTRUE(input$tools_goora_flip_axis),
-      ontology_filter = "all"  # Always compute all ontologies
+      alpha = safe_num(input$tools_msea_alpha, defs_msea$style$alpha %||% 0.8),
+      show_pathway_id = isTRUE(input$tools_msea_show_pathway_id),
+      font_size = safe_int(input$tools_msea_font_size, defs_msea$style$font_size %||% 14),
+      axis_text_size = safe_int(input$tools_msea_axis_text_size, defs_msea$style$axis_text_size %||% 20),
+      width = safe_num(input$tools_msea_width, defs_msea$style$width %||% 10),
+      height = safe_num(input$tools_msea_height, defs_msea$style$height %||% 8),
+      flip_axis = isTRUE(input$tools_msea_flip_axis),
+      pathway_db_filter = input$tools_msea_pathway_db_view %||% "all"
     )
 
     rv$pending_style <- style
@@ -745,7 +671,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     rv$progress_path <- tempfile(fileext = ".json")
     rv$run_start_time <- Sys.time()
     rv$run_status <- "running"
-    write_progress(rv$progress_path, "running", "Starting GO-ORA analysis...", 5)
+    write_progress(rv$progress_path, "running", "Starting MSEA analysis...", 5)
 
     has_callr <- requireNamespace("callr", quietly = TRUE)
 
@@ -753,8 +679,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
       app_root <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
 
       rv$bg_process <- callr::r_bg(
-        func = function(app_root, tb, genes, params, progress_path) {
-          # Set working directory (critical for file paths to resolve correctly)
+        func = function(app_root, mb, metabolites, params, progress_path) {
+          # Set working directory
           setwd(app_root)
 
           write_prog <- function(msg, pct) {
@@ -764,7 +690,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
           write_prog("Loading engine code...", 5)
 
-          # Source all required files (same pattern as new_run page)
+          # Source all required files
           source(file.path(app_root, "R", "00_init.R"), local = FALSE)
           engine_files <- list.files(file.path(app_root, "R", "engines"), pattern = "\\.R$", full.names = TRUE)
           for (f in engine_files) source(f, local = FALSE)
@@ -773,42 +699,17 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
           utils_files <- list.files(file.path(app_root, "R", "utils"), pattern = "\\.R$", full.names = TRUE)
           for (f in utils_files) source(f, local = FALSE)
 
-          write_prog("Preparing GO mappings...", 10)
-
-          # Ensure terpbase has protein_to_go and go_terms mappings (moved to background)
-          if (is.null(tb$protein_to_go) && !is.null(tb$annot_long)) {
-            annot <- tb$annot_long
-            if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
-              genes_list <- unique(annot$gene)
-              protein_to_go <- lapply(genes_list, function(g) {
-                unique(annot$ID[annot$gene == g])
-              })
-              names(protein_to_go) <- genes_list
-              tb$protein_to_go <- protein_to_go
-            }
-          }
-          if (is.null(tb$go_terms) && !is.null(tb$terms_by_id)) {
-            terms <- tb$terms_by_id
-            if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
-              go_terms <- lapply(seq_len(nrow(terms)), function(i) {
-                list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
-              })
-              names(go_terms) <- terms$ID
-              tb$go_terms <- go_terms
-            }
-          }
+          write_prog("Running pathway enrichment...", 30)
 
           payload <- list(
             ok = TRUE,
             params = params,
-            query_proteins = genes,
-            terpbase = tb
+            query_metabolites = metabolites,
+            metabobase = mb
           )
 
-          write_prog("Running over-representation analysis...", 30)
-
           result <- tryCatch({
-            res <- stats_goora_run(payload, params = params, context = list(terpbase = tb))
+            res <- stats_msea_run(payload, params = params, context = list(metabobase = mb))
             write_prog("Analysis complete!", 100)
             list(ok = TRUE, result = res)
           }, error = function(e) {
@@ -819,8 +720,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
         },
         args = list(
           app_root = app_root,
-          tb = tb,
-          genes = genes,
+          mb = mb,
+          metabolites = metabolites,
           params = params,
           progress_path = rv$progress_path
         ),
@@ -828,17 +729,16 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
         supervise = TRUE
       )
     } else {
-      # Synchronous fallback - must do prep work here
-      tb <- tools_ensure_terpbase_go_mappings(tb)
+      # Synchronous fallback
       payload <- list(
         ok = TRUE,
         params = params,
-        query_proteins = genes,
-        terpbase = tb
+        query_metabolites = metabolites,
+        metabobase = mb
       )
 
       res <- tryCatch({
-        stats_goora_run(payload, params = params, context = list(terpbase = tb))
+        stats_msea_run(payload, params = params, context = list(metabobase = mb))
       }, error = function(e) {
         rv$status_msg <- conditionMessage(e)
         rv$status_level <- "error"
@@ -848,14 +748,14 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
       if (!is.null(res)) {
         rv$results <- res
-        rv$rendered <- tb_render_goora(res, style, meta = NULL)
+        rv$rendered <- tb_render_msea(res, style, meta = NULL)
         rv$run_status <- "done"
       }
     }
   }, ignoreInit = TRUE)
 
   # Stop button handler
-  observeEvent(input$tools_goora_stop, {
+  observeEvent(input$tools_msea_stop, {
     if (!is.null(rv$bg_process) && rv$bg_process$is_alive()) {
       tryCatch(rv$bg_process$kill(), error = function(e) NULL)
       rv$bg_process <- NULL
@@ -865,9 +765,9 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     }
   }, ignoreInit = TRUE)
 
-  output$tools_goora_summary <- renderUI({
+  output$tools_msea_summary <- renderUI({
     if (identical(rv$run_status, "running")) {
-      p <- progress_goora_rx()
+      p <- progress_msea_rx()
       pct <- suppressWarnings(as.numeric(p$pct %||% 0))
       if (is.na(pct)) pct <- 0
       pct <- max(0, min(100, pct))
@@ -877,7 +777,7 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
         div(class = "tool-status-row",
           div(class = "tool-status-pill running", "Running"),
           div(class = "tool-status-msg", msg),
-          actionButton("tools_goora_stop", "Stop", class = "btn btn-danger btn-sm", style = "margin-left: auto;")
+          actionButton("tools_msea_stop", "Stop", class = "btn btn-danger btn-sm", style = "margin-left: auto;")
         ),
         div(class = "tool-progress-wrap",
           div(class = "tool-progress-bar",
@@ -894,15 +794,13 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
     res <- rv$results
     if (is.null(res)) {
-      return(tags$div(class = "text-muted", "Run GO-ORA to see results."))
+      return(tags$div(class = "text-muted", "Run MSEA to see results."))
     }
 
-    qinfo <- res$data$query_info %||% list()
-    n_query <- qinfo$n_query %||% NA_integer_
-    n_background <- qinfo$n_background %||% NA_integer_
+    n_query <- res$data$query_count %||% NA_integer_
+    n_background <- res$data$background_count %||% NA_integer_
     n_terms <- if (is.data.frame(res$data$terms %||% NULL)) nrow(res$data$terms) else 0L
     n_input <- rv$input_count %||% NA_integer_
-    n_unmatched <- if (is.finite(n_input) && is.finite(n_query)) n_input - n_query else NA_integer_
 
     log_df <- res$data$log %||% NULL
     log_msg <- NULL
@@ -913,87 +811,84 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
     tags$div(
       class = "card",
-      tags$h4("GO-ORA summary"),
-      tags$p(sprintf("Input genes: %s", ifelse(is.finite(n_input), n_input, "NA"))),
-      tags$p(sprintf("Matched to TerpBase: %s", ifelse(is.finite(n_query), n_query, "NA"))),
-      if (is.finite(n_unmatched) && n_unmatched > 0) {
-        tags$p(sprintf("Unmatched input genes: %s", n_unmatched))
-      },
+      tags$h4("MSEA summary"),
+      tags$p(sprintf("Input metabolites: %s", ifelse(is.finite(n_input), n_input, "NA"))),
+      tags$p(sprintf("Matched to MetaboBase: %s", ifelse(is.finite(n_query), n_query, "NA"))),
       tags$p(sprintf("Background size: %s", ifelse(is.finite(n_background), n_background, "NA"))),
-      tags$p(sprintf("Enriched terms: %s", n_terms)),
+      tags$p(sprintf("Enriched pathways: %s", n_terms)),
       if (!is.null(log_msg)) tags$p(log_msg)
     )
   })
 
-  output$tools_goora_tabs <- renderUI({
+  output$tools_msea_tabs <- renderUI({
     res <- rv$results
     if (is.null(res)) {
-      return(tags$div(class = "text-muted", "No GO-ORA results yet."))
+      return(tags$div(class = "text-muted", "No MSEA results yet."))
     }
 
     # Calculate aspect ratio from current inputs
-    w_in <- safe_num(input$tools_goora_width, defs_goora$style$width %||% 12)
-    h_in <- safe_num(input$tools_goora_height, defs_goora$style$height %||% 6)
+    w_in <- safe_num(input$tools_msea_width, defs_msea$style$width %||% 10)
+    h_in <- safe_num(input$tools_msea_height, defs_msea$style$height %||% 8)
     ar <- w_in / h_in
 
     tagList(
       # Export buttons
       div(
         class = "tool-export-buttons",
-        actionButton("tools_goora_download_png", "Download PNG", class = "btn btn-sm btn-default", icon = icon("download")),
-        actionButton("tools_goora_download_pdf", "Download PDF", class = "btn btn-sm btn-default", icon = icon("file-pdf")),
-        actionButton("tools_goora_copy_plot", "Copy Plot", class = "btn btn-sm btn-default", icon = icon("copy")),
-        downloadButton("tools_goora_download_excel", "Download Excel", class = "btn btn-sm btn-default")
+        actionButton("tools_msea_download_png", "Download PNG", class = "btn btn-sm btn-default", icon = icon("download")),
+        actionButton("tools_msea_download_pdf", "Download PDF", class = "btn btn-sm btn-default", icon = icon("file-pdf")),
+        actionButton("tools_msea_copy_plot", "Copy Plot", class = "btn btn-sm btn-default", icon = icon("copy")),
+        downloadButton("tools_msea_download_excel", "Download Excel", class = "btn btn-sm btn-default")
       ),
       div(
         class = "tool-plot-box",
         style = sprintf("--tool-plot-ar:%s;", format(ar, scientific = FALSE, trim = TRUE)),
-        plotOutput("tools_goora_plot", height = "100%")
+        plotOutput("tools_msea_plot", height = "100%")
       ),
       div(
         class = "tool-table-wrap",
-        uiOutput("tools_goora_table_ui")
+        uiOutput("tools_msea_table_ui")
       )
     )
   })
 
   # Build current style from inputs (reactive helper)
-  current_goora_style <- reactive({
+  current_msea_style <- reactive({
     list(
-      plot_type = input$tools_goora_plot_type %||% defs_goora$style$plot_type %||% "bar",
-      color_mode = input$tools_goora_color_mode %||% defs_goora$style$color_mode %||% "fdr",
-      fdr_palette = input$tools_goora_fdr_palette %||% defs_goora$style$fdr_palette %||% "yellow_cap",
-      flat_color = if (nzchar(input$tools_goora_flat_color %||% "")) {
-        input$tools_goora_flat_color
+      plot_type = input$tools_msea_plot_type %||% defs_msea$style$plot_type %||% "bar",
+      color_mode = input$tools_msea_color_mode %||% defs_msea$style$color_mode %||% "fdr",
+      fdr_palette = input$tools_msea_fdr_palette %||% defs_msea$style$fdr_palette %||% "yellow_cap",
+      flat_color = if (nzchar(input$tools_msea_flat_color %||% "")) {
+        input$tools_msea_flat_color
       } else {
-        defs_goora$style$flat_color %||% "#B0B0B0"
+        defs_msea$style$flat_color %||% "#B0B0B0"
       },
-      alpha = safe_num(input$tools_goora_alpha, defs_goora$style$alpha %||% 0.8),
-      show_go_id = isTRUE(input$tools_goora_show_go_id),
-      font_size = safe_int(input$tools_goora_font_size, defs_goora$style$font_size %||% 14),
-      axis_text_size = safe_int(input$tools_goora_axis_text_size, defs_goora$style$axis_text_size %||% 20),
-      width = safe_num(input$tools_goora_width, defs_goora$style$width %||% 12),
-      height = safe_num(input$tools_goora_height, defs_goora$style$height %||% 6),
-      flip_axis = isTRUE(input$tools_goora_flip_axis),
-      ontology_filter = input$tools_goora_ontology_view %||% "BP"
+      alpha = safe_num(input$tools_msea_alpha, defs_msea$style$alpha %||% 0.8),
+      show_pathway_id = isTRUE(input$tools_msea_show_pathway_id),
+      font_size = safe_int(input$tools_msea_font_size, defs_msea$style$font_size %||% 14),
+      axis_text_size = safe_int(input$tools_msea_axis_text_size, defs_msea$style$axis_text_size %||% 20),
+      width = safe_num(input$tools_msea_width, defs_msea$style$width %||% 10),
+      height = safe_num(input$tools_msea_height, defs_msea$style$height %||% 8),
+      flip_axis = isTRUE(input$tools_msea_flip_axis),
+      pathway_db_filter = input$tools_msea_pathway_db_view %||% "all"
     )
   })
 
   # Get current ggplot object for export
-  current_goora_plot <- reactive({
+  current_msea_plot <- reactive({
     res <- rv$results
     if (is.null(res)) return(NULL)
 
-    style <- current_goora_style()
+    style <- current_msea_style()
     hidden_terms <- rv$hidden_terms %||% character()
     term_labels <- rv$term_labels %||% list()
 
     # Build meta with visibility info
     meta <- list(visibility = list(hidden_terms = hidden_terms, term_labels = term_labels))
-    rend <- tb_render_goora(res, style, meta = meta)
+    rend <- tb_render_msea(res, style, meta = meta)
 
-    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
-    plot_key <- paste0(ont, "_plot")
+    db_view <- tolower(input$tools_msea_pathway_db_view %||% "all")
+    plot_key <- paste0(db_view, "_plot")
     p <- rend$plots[[plot_key]]
 
     if (is.null(p) && length(rend$plots) > 0) {
@@ -1002,12 +897,12 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     p
   })
 
-  # Reactive to re-render plot when plot options, ontology view, or visibility changes
-  output$tools_goora_plot <- renderPlot({
-    p <- current_goora_plot()
+  # Reactive to re-render plot when plot options or visibility changes
+  output$tools_msea_plot <- renderPlot({
+    p <- current_msea_plot()
     if (is.null(p)) {
       plot.new()
-      text(0.5, 0.5, "No enriched terms for this ontology.")
+      text(0.5, 0.5, "No enriched pathways for this database.")
       return(invisible(NULL))
     }
     suppressMessages(print(p))
@@ -1018,63 +913,63 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   )
 
   # Editable table UI with visibility checkboxes, term name editing, and search
-  output$tools_goora_table_ui <- renderUI({
+  output$tools_msea_table_ui <- renderUI({
     res <- rv$results
     if (is.null(res)) {
       return(tags$div(class = "text-muted", "No table data."))
     }
 
-    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
-    style <- current_goora_style()
-    rend <- tb_render_goora(res, style, meta = NULL)
+    db_view <- tolower(input$tools_msea_pathway_db_view %||% "all")
+    style <- current_msea_style()
+    rend <- tb_render_msea(res, style, meta = NULL)
 
-    table_key <- paste0(ont, "_table")
+    table_key <- paste0(db_view, "_table")
     df <- rend$tables[[table_key]]
     if (is.null(df) && length(rend$tables) > 0) {
       df <- rend$tables[[1]]
     }
 
     if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
-      return(tags$div(class = "text-muted", "No terms to display."))
+      return(tags$div(class = "text-muted", "No pathways to display."))
     }
 
     hidden_term_ids <- rv$hidden_terms %||% character()
     term_labels_by_id <- rv$term_labels %||% list()
 
     # Determine term_id and term_name columns
-    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
-    term_name_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
+    term_id_col <- if ("pathway_id" %in% names(df)) "pathway_id" else NULL
+    term_name_col <- if ("pathway_name" %in% names(df)) "pathway_name" else NULL
 
     if (is.null(term_id_col) || is.null(term_name_col)) {
       return(tags$div(class = "text-muted", "Table missing required columns."))
     }
 
-    # Get gene column for search button
-    gene_col <- intersect(c("genes", "geneID", "protein_ids", "core_enrichment", "Genes"), names(df))[1]
-    gene_col_data <- if (!is.na(gene_col)) df[[gene_col]] else NULL
+    # Get metabolite column for search button
+    metabolite_col <- intersect(c("metabolite_ids", "metabolites"), names(df))[1]
+    metabolite_col_data <- if (!is.na(metabolite_col)) df[[metabolite_col]] else NULL
 
-    # Build the editable table (matching result viewer exactly)
-    tools_go_editable_table_ui(
-      id_prefix = paste0("tools_goora_", ont),
+    # Build the editable table
+    tools_msea_editable_table_ui(
+      id_prefix = paste0("tools_msea_", db_view),
       df = df,
       term_id_col = term_id_col,
       term_name_col = term_name_col,
       hidden_term_ids = hidden_term_ids,
       term_labels_by_id = term_labels_by_id,
-      gene_col_data = gene_col_data
+      metabolite_col_data = metabolite_col_data
     )
   })
 
-  # Bind observers for visibility and term name changes (matching result viewer pattern)
+  # Bind observers for visibility and term name changes
   observe({
     res <- rv$results
     if (is.null(res)) return()
 
-    ont <- tolower(input$tools_goora_ontology_view %||% "BP")
-    style <- current_goora_style()
-    rend <- tb_render_goora(res, style, meta = NULL)
+    db_view <- tolower(input$tools_msea_pathway_db_view %||% "all")
+    style <- current_msea_style()
+    rend <- tb_render_msea(res, style, meta = NULL)
 
-    table_key <- paste0(ont, "_table")
+    table_key <- paste0(db_view, "_table")
     df <- rend$tables[[table_key]]
     if (is.null(df) && length(rend$tables) > 0) {
       df <- rend$tables[[1]]
@@ -1082,12 +977,12 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
     if (is.null(df) || !is.data.frame(df)) return()
 
     # Determine term_id column
-    term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+    term_id_col <- if ("pathway_id" %in% names(df)) "pathway_id" else NULL
     if (is.null(term_id_col)) return()
 
-    # Bind observers using the same pattern as result viewer
-    tools_bind_editable_go_table(
-      id_prefix = paste0("tools_goora_", ont),
+    # Bind observers
+    tools_msea_bind_editable_table(
+      id_prefix = paste0("tools_msea_", db_view),
       df = df,
       term_id_col = term_id_col,
       input = input,
@@ -1115,36 +1010,36 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   })
 
   # Export: Download PNG
-  observeEvent(input$tools_goora_download_png, {
-    p <- current_goora_plot()
+  observeEvent(input$tools_msea_download_png, {
+    p <- current_msea_plot()
     if (is.null(p)) {
       showNotification("No plot to download.", type = "warning")
       return()
     }
     showModal(modalDialog(
       title = "Download PNG",
-      selectInput("tools_goora_png_dpi", "DPI", choices = c(150, 300, 600), selected = 300),
-      downloadButton("tools_goora_png_confirm", "Download", class = "btn-primary"),
-      actionButton("tools_goora_png_cancel", "Cancel", class = "btn-secondary"),
+      selectInput("tools_msea_png_dpi", "DPI", choices = c(150, 300, 600), selected = 300),
+      downloadButton("tools_msea_png_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_msea_png_cancel", "Cancel", class = "btn-secondary"),
       footer = NULL,
       easyClose = TRUE
     ))
   }, ignoreInit = TRUE)
 
-  observeEvent(input$tools_goora_png_cancel, removeModal(), ignoreInit = TRUE)
+  observeEvent(input$tools_msea_png_cancel, removeModal(), ignoreInit = TRUE)
 
-  output$tools_goora_png_confirm <- downloadHandler(
+  output$tools_msea_png_confirm <- downloadHandler(
     filename = function() {
-      ont <- input$tools_goora_ontology_view %||% "BP"
-      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+      db <- input$tools_msea_pathway_db_view %||% "all"
+      paste0("msea_", tolower(db), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
     },
     content = function(file) {
-      p <- current_goora_plot()
+      p <- current_msea_plot()
       if (is.null(p)) return()
-      style <- current_goora_style()
-      dpi <- as.numeric(input$tools_goora_png_dpi %||% 300)
-      w <- style$width %||% 12
-      h <- style$height %||% 6
+      style <- current_msea_style()
+      dpi <- as.numeric(input$tools_msea_png_dpi %||% 300)
+      w <- style$width %||% 10
+      h <- style$height %||% 8
       png_type <- if (capabilities("cairo")) "cairo-png" else NULL
       ggplot2::ggsave(file, p, width = w, height = h, units = "in", dpi = dpi,
                       device = grDevices::png, type = png_type)
@@ -1153,34 +1048,34 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   )
 
   # Export: Download PDF
-  observeEvent(input$tools_goora_download_pdf, {
-    p <- current_goora_plot()
+  observeEvent(input$tools_msea_download_pdf, {
+    p <- current_msea_plot()
     if (is.null(p)) {
       showNotification("No plot to download.", type = "warning")
       return()
     }
     showModal(modalDialog(
       title = "Download PDF",
-      downloadButton("tools_goora_pdf_confirm", "Download", class = "btn-primary"),
-      actionButton("tools_goora_pdf_cancel", "Cancel", class = "btn-secondary"),
+      downloadButton("tools_msea_pdf_confirm", "Download", class = "btn-primary"),
+      actionButton("tools_msea_pdf_cancel", "Cancel", class = "btn-secondary"),
       footer = NULL,
       easyClose = TRUE
     ))
   }, ignoreInit = TRUE)
 
-  observeEvent(input$tools_goora_pdf_cancel, removeModal(), ignoreInit = TRUE)
+  observeEvent(input$tools_msea_pdf_cancel, removeModal(), ignoreInit = TRUE)
 
-  output$tools_goora_pdf_confirm <- downloadHandler(
+  output$tools_msea_pdf_confirm <- downloadHandler(
     filename = function() {
-      ont <- input$tools_goora_ontology_view %||% "BP"
-      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+      db <- input$tools_msea_pathway_db_view %||% "all"
+      paste0("msea_", tolower(db), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
     },
     content = function(file) {
-      p <- current_goora_plot()
+      p <- current_msea_plot()
       if (is.null(p)) return()
-      style <- current_goora_style()
-      w <- style$width %||% 12
-      h <- style$height %||% 6
+      style <- current_msea_style()
+      w <- style$width %||% 10
+      h <- style$height %||% 8
       pdf_device <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
       ggplot2::ggsave(file, p, width = w, height = h, units = "in", device = pdf_device)
       removeModal()
@@ -1188,15 +1083,15 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
   )
 
   # Export: Copy Plot
-  observeEvent(input$tools_goora_copy_plot, {
-    session$sendCustomMessage("tools_copy_plot", list(id = "tools_goora_plot"))
+  observeEvent(input$tools_msea_copy_plot, {
+    session$sendCustomMessage("tools_copy_plot", list(id = "tools_msea_plot"))
   }, ignoreInit = TRUE)
 
   # Export: Download Excel
-  output$tools_goora_download_excel <- downloadHandler(
+  output$tools_msea_download_excel <- downloadHandler(
     filename = function() {
-      ont <- input$tools_goora_ontology_view %||% "BP"
-      paste0("goora_", tolower(ont), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
+      db <- input$tools_msea_pathway_db_view %||% "all"
+      paste0("msea_", tolower(db), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
     },
     content = function(file) {
       res <- rv$results
@@ -1205,11 +1100,11 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
         return()
       }
 
-      ont <- tolower(input$tools_goora_ontology_view %||% "BP")
-      style <- current_goora_style()
-      rend <- tb_render_goora(res, style, meta = NULL)
+      db_view <- tolower(input$tools_msea_pathway_db_view %||% "all")
+      style <- current_msea_style()
+      rend <- tb_render_msea(res, style, meta = NULL)
 
-      table_key <- paste0(ont, "_table")
+      table_key <- paste0(db_view, "_table")
       df <- rend$tables[[table_key]]
       if (is.null(df) && length(rend$tables) > 0) {
         df <- rend$tables[[1]]
@@ -1222,8 +1117,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
       # Apply term labels for export
       term_labels <- rv$term_labels %||% list()
-      term_col <- if ("term" %in% names(df)) "term" else if ("term_name" %in% names(df)) "term_name" else NULL
-      term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL
+      term_col <- if ("pathway_name" %in% names(df)) "pathway_name" else NULL
+      term_id_col <- if ("pathway_id" %in% names(df)) "pathway_id" else NULL
 
       if (!is.null(term_col) && !is.null(term_id_col) && length(term_labels) > 0) {
         for (i in seq_len(nrow(df))) {
@@ -1236,8 +1131,8 @@ tools_goora_server <- function(input, output, session, app_state, rv, defs_goora
 
       if (requireNamespace("openxlsx", quietly = TRUE)) {
         wb <- openxlsx::createWorkbook()
-        openxlsx::addWorksheet(wb, "GO-ORA Results")
-        openxlsx::writeData(wb, "GO-ORA Results", df)
+        openxlsx::addWorksheet(wb, "MSEA Results")
+        openxlsx::writeData(wb, "MSEA Results", df)
         openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
       } else {
         utils::write.csv(df, file, row.names = FALSE)
