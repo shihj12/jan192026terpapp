@@ -5523,114 +5523,95 @@ page_results_server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  # 2D GOFCS plotly relayout handler (for annotation dragging only - no click actions)
-  # FIX: The original observe() block caused infinite busy state because it read
+  # 2D GOFCS plotly relayout handlers for each standard ontology tab (BP, MF, CC)
+  # These are created once at session start and listen for annotation drag events.
+  # Using the same pattern as the volcano handler (observeEvent on event_data).
 
-  # event_data() directly inside observe(), creating a dependency on both the plotly
-  # event AND active_effective_state(). When style_rev() changed, the observe re-ran.
-  #
-  # Solution: Bind separate observeEvent handlers for each tab's plotly source.
-  # The outer observe() depends on active_rendered() (to bind when tabs available),
-  # but each inner observeEvent only triggers on actual plotly relayout events.
-  observe({
-    eng <- tolower(active_engine_id() %||% "")
+  # BP tab relayout handler
+  observeEvent(event_data("plotly_relayout", source = "gofcs_plotly_bp_plot"), {
+    relayout_data <- event_data("plotly_relayout", source = "gofcs_plotly_bp_plot")
+    if (is.null(relayout_data)) return()
+    res_handle_2dgofcs_relayout(relayout_data, "bp_plot")
+  }, ignoreInit = TRUE)
+
+  # MF tab relayout handler
+  observeEvent(event_data("plotly_relayout", source = "gofcs_plotly_mf_plot"), {
+    relayout_data <- event_data("plotly_relayout", source = "gofcs_plotly_mf_plot")
+    if (is.null(relayout_data)) return()
+    res_handle_2dgofcs_relayout(relayout_data, "mf_plot")
+  }, ignoreInit = TRUE)
+
+  # CC tab relayout handler
+  observeEvent(event_data("plotly_relayout", source = "gofcs_plotly_cc_plot"), {
+    relayout_data <- event_data("plotly_relayout", source = "gofcs_plotly_cc_plot")
+    if (is.null(relayout_data)) return()
+    res_handle_2dgofcs_relayout(relayout_data, "cc_plot")
+  }, ignoreInit = TRUE)
+
+  # Shared handler for 2D GOFCS relayout events (annotation dragging)
+  res_handle_2dgofcs_relayout <- function(relayout_data, plot_key) {
+    eng <- isolate(tolower(active_engine_id() %||% ""))
     if (!identical(eng, "2dgofcs")) return()
 
-    # Use active_rendered() (NOT isolated) so we bind observers when tabs become available
-    rend <- active_rendered()
-    if (is.null(rend) || inherits(rend, "error")) return()
+    st <- isolate(active_effective_state())
+    style <- st$style %||% list()
+    if (!isTRUE(res_is_interactive_view(style))) return()
 
-    has_tabs <- !is.null(rend$tabs) && length(rend$tabs) > 0
-    if (!has_tabs) return()
+    res <- isolate(active_results())
+    if (is.null(res)) return()
 
-    # Initialize binding tracker
-    if (is.null(session$userData$res_2dgofcs_relayout_bound)) {
-      session$userData$res_2dgofcs_relayout_bound <- new.env(parent = emptyenv())
-    }
-    bound <- session$userData$res_2dgofcs_relayout_bound
+    visibility <- st$visibility %||% list()
+    plotly_state <- st$plotly %||% list()
+    state <- res_2dgofcs_plot_state(res, style, visibility, plot_key, plotly_state)
+    if (is.null(state)) return()
 
-    for (tab_name in rend$tabs) {
-      local({
-        t_normalized <- gsub(" ", "_", tolower(tab_name))
-        plot_key_local <- paste0(t_normalized, "_plot")
-        source_name <- paste0("gofcs_plotly_", plot_key_local)
-        bind_key <- paste0("relayout|", source_name)
+    labs <- state$labs
+    if (length(labs) == 0) return()
 
-        if (!exists(bind_key, envir = bound, inherits = FALSE)) {
-          assign(bind_key, TRUE, envir = bound)
+    updated <- FALSE
+    for (key in names(relayout_data)) {
+      if (grepl("^annotations\\[\\d+\\]\\.(x|y)$", key)) {
+        matches <- regmatches(key, regexec("annotations\\[(\\d+)\\]\\.(x|y)", key))[[1]]
+        if (length(matches) == 3) {
+          idx <- as.integer(matches[2]) + 1
+          coord <- matches[3]
+          value <- relayout_data[[key]]
 
-          # observeEvent on event_data() only triggers on actual plotly events
-          observeEvent(event_data("plotly_relayout", source = source_name), {
-            relayout_data <- event_data("plotly_relayout", source = source_name)
-            if (is.null(relayout_data)) return()
+          if (idx >= 1 && idx <= length(labs)) {
+            df_plot <- state$df_plot
+            df_lab <- df_plot[df_plot$term %in% labs, , drop = FALSE]
+            if (idx <= nrow(df_lab)) {
+              term_row <- df_lab[idx, , drop = FALSE]
+              term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term_row$term[1])
 
-            # Check if we're still in 2dgofcs interactive mode
-            eng_check <- isolate(tolower(active_engine_id() %||% ""))
-            if (!identical(eng_check, "2dgofcs")) return()
+              res_update_plotly_labels(plot_key, function(cur_labels) {
+                if (is.null(cur_labels[[term_id]])) cur_labels[[term_id]] <- list()
 
-            st <- isolate(active_effective_state())
-            style <- st$style %||% list()
-            if (!isTRUE(res_is_interactive_view(style))) return()
-
-            res <- isolate(active_results())
-            if (is.null(res)) return()
-
-            visibility <- st$visibility %||% list()
-            plotly_state <- st$plotly %||% list()
-            state <- res_2dgofcs_plot_state(res, style, visibility, plot_key_local, plotly_state)
-            if (is.null(state)) return()
-
-            labs <- state$labs
-            if (length(labs) == 0) return()
-
-            updated <- FALSE
-            for (key in names(relayout_data)) {
-              if (grepl("^annotations\\[\\d+\\]\\.(x|y)$", key)) {
-                matches <- regmatches(key, regexec("annotations\\[(\\d+)\\]\\.(x|y)", key))[[1]]
-                if (length(matches) == 3) {
-                  idx <- as.integer(matches[2]) + 1
-                  coord <- matches[3]
-                  value <- relayout_data[[key]]
-
-                  if (idx >= 1 && idx <= length(labs)) {
-                    df_plot <- state$df_plot
-                    df_lab <- df_plot[df_plot$term %in% labs, , drop = FALSE]
-                    if (idx <= nrow(df_lab)) {
-                      term_row <- df_lab[idx, , drop = FALSE]
-                      term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term_row$term[1])
-
-                      res_update_plotly_labels(plot_key_local, function(cur_labels) {
-                        if (is.null(cur_labels[[term_id]])) cur_labels[[term_id]] <- list()
-
-                        if (coord == "x") {
-                          norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
-                          cur_labels[[term_id]]$x <- norm$x[[1]]
-                        } else if (coord == "y") {
-                          norm <- tb_normalize_coords(0, value, state$xlim, state$ylim)
-                          cur_labels[[term_id]]$y <- norm$y[[1]]
-                        }
-
-                        cur_labels[[term_id]]$x_range <- state$xlim
-                        cur_labels[[term_id]]$y_range <- state$ylim
-                        cur_labels
-                      })
-                      updated <- TRUE
-                    }
-                  }
+                if (coord == "x") {
+                  norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
+                  cur_labels[[term_id]]$x <- norm$x[[1]]
+                } else if (coord == "y") {
+                  norm <- tb_normalize_coords(0, value, state$xlim, state$ylim)
+                  cur_labels[[term_id]]$y <- norm$y[[1]]
                 }
-              }
-            }
 
-            if (updated) {
-              rv$has_unsaved_changes <- TRUE
-              rv$save_status <- "dirty"
-              style_rev(isolate(style_rev()) + 1L)
+                cur_labels[[term_id]]$x_range <- state$xlim
+                cur_labels[[term_id]]$y_range <- state$ylim
+                cur_labels
+              })
+              updated <- TRUE
             }
-          }, ignoreInit = TRUE)
+          }
         }
-      })
+      }
     }
-  })
+
+    if (updated) {
+      rv$has_unsaved_changes <- TRUE
+      rv$save_status <- "dirty"
+      style_rev(isolate(style_rev()) + 1L)
+    }
+  }
 
   output$res_hover_ui <- renderUI({
     eng <- tolower(active_engine_id() %||% "")
