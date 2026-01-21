@@ -114,62 +114,100 @@ res_collapse_section_ui <- function(id, title, badge_text = NULL, open = FALSE, 
 # ---- Style field grouping for collapsible sections -------------------------
 # Returns section name for a given style field
 # Returns NULL for selectors that should stay at top (not in accordion)
+#
+# IMPORTANT: This uses EXPLICIT field lists, not regex matching.
+# When adding new fields to the registry, add them to the appropriate list here.
 get_style_section <- function(field_name) {
+
   # =====================================================
-  # SELECTORS / TOGGLES - NOT in any accordion (return NULL)
+  # SELECTORS - NOT in any accordion (return NULL)
+  # Mode/type selectors that change graph type or major behavior
   # These remain always-visible at the top of the style panel
   # =====================================================
   selector_fields <- c(
-    "overlap_plot_type", "view_mode", "ontology_filter", "selected_group",
-    "plot_type", "layout", "transform", "acquisition_mode", "color_mode",
-    # Color mode variants that control downstream color field visibility
-    "bar_color_mode", "point_color_mode"
+    # Graph type selectors
+    "plot_type", "overlap_plot_type", "view_mode",
+    # Layout and orientation
+    "layout", "orientation",
+    # Data transformation and mode selectors
+    "transform", "acquisition_mode", "label_mode",
+    # Color mode selectors (control downstream color field visibility)
+    "color_mode", "bar_color_mode", "point_color_mode",
+    # Filter selectors
+    "ontology_filter", "pathway_db", "class_level",
+    # Group/comparison selectors
+    "selected_group",
+    # Line type selector
+    "line_type",
+    # CV plot mode
+    "cv_plot_mode", "x_axis_mode"
   )
   if (field_name %in% selector_fields) return(NULL)
 
   # =====================================================
   # LABELS section
-  # Text labels, annotations, titles, font sizes, show/hide toggles for text
+  # Text content, font sizes, show/hide toggles for text annotations
   # =====================================================
-  # Match fields primarily about text/labels, but exclude color/alpha fields that happen to contain "label"
-  # e.g., "label_font_size" -> Labels, but "count_labels_color" -> Graph Elements
-  if (grepl("label|text|title|font|rotation", field_name, ignore.case = TRUE)) {
-    # Exclude fields that end with _color, _alpha, _width (these are styling, not label config)
-    if (!grepl("_color$|_alpha$|_width$", field_name, ignore.case = TRUE)) {
-      return("labels")
-    }
-  }
-  # Specific label-related fields (show toggles for text elements, and their dependent fields)
   label_fields <- c(
+    # Show/hide toggles for text elements
     "show_rho", "show_equation", "show_n", "show_percentage", "show_group_names",
-    "show_sig_labels", "show_summary_cards", "show_values", "venn_show_percentage",
+    "show_sig_labels", "show_summary_cards", "show_values", "show_count_labels",
+    "show_row_labels", "show_labels", "venn_show_percentage",
+    # Text sizes (font sizes for various text elements)
+    "rho_text_size", "font_size", "label_font_size", "row_font_size",
+    "value_label_size", "count_labels_size", "count_label_size",
+    "summary_text_size", "venn_text_size", "venn_set_name_size",
+    "mean_text_size", "scree_text_size",
+    # Text positions
     "rho_position_x", "rho_position_y",
-    # Venn diagram label-related fields
-    "venn_set_name_size",
-    # Mean display controls and their dependent type selector (must stay together for conditionalPanel)
-    "show_mean", "show_global_mean", "mean_type",
-    # Reference line/guide toggles and their dependent size fields (must stay together)
-    "show_ref_lines", "ref_line_size", "show_diagonal_guides", "diagonal_guide_size"
+    # Axis titles (text content, not axis styling)
+    "axis_title", "x_axis_title", "y_axis_title",
+    # Label count and rotation
+    "n_labels", "label_rotation",
+    # Mean display toggles and type (must stay together for conditionalPanel)
+    "show_mean", "show_mean_value", "show_global_mean", "mean_type",
+    # Reference line/guide toggles and sizes (must stay together for conditionalPanel)
+    "show_ref_lines", "ref_line_size", "show_diagonal_guides", "diagonal_guide_size",
+    # Threshold toggle (keep with threshold styling in graph elements? No - it's a show/hide)
+    "threshold_show"
   )
   if (field_name %in% label_fields) return("labels")
 
   # =====================================================
   # AXIS ELEMENTS section
-  # Axis styling, ranges, min/max values, dimensions (plot width/height only)
+  # Axis styling, range modes, min/max values, plot dimensions
   # =====================================================
-  # Match axis config, range modes, and min/max values
-  # Note: ^x_|^y_|^xy_ matches x_min, y_max, xy_range_mode etc.
-  if (grepl("axis|range|_min$|_max$|^x_|^y_|^xy_", field_name, ignore.case = TRUE)) {
-    return("axis_elements")
-  }
-  # Explicit axis-related fields (plot dimensions, conditional min/max fields)
-  # Note: "width" and "height" here mean PLOT dimensions, not line widths
-  axis_fields <- c("width", "height", "pool", "ymax_protein", "ymin_protein")
+  axis_fields <- c(
+    # Range mode selectors
+    "x_range_mode", "y_range_mode", "xy_range_mode", "y_limit_mode",
+    # Min/max values
+    "x_min", "x_max", "y_min", "y_max", "xy_min", "xy_max", "ymax_protein",
+    # Axis styling
+    "axis_style", "axis_text_size",
+    # Plot dimensions (width/height of the plot itself, in inches)
+    "width", "height",
+    # Threshold/pool values (axis-related cutoffs)
+    "pool_value", "cv_threshold", "pool_above"
+  )
   if (field_name %in% axis_fields) return("axis_elements")
 
   # =====================================================
-  # GRAPH ELEMENTS section (default)
-  # Points, lines, colors, fills, opacity, shapes, outlines, etc.
+  # GRAPH ELEMENTS section (default catchall)
+  # Colors, point/line sizes, opacity/alpha, fills, outlines, visual styling
+  #
+  # Includes (non-exhaustive):
+  # - Point styling: point_size, point_alpha, dot_alpha
+  # - Line styling: line_size, line_color, mean_line_size, mean_line_color
+  # - Fill colors: flat_color, bar_color, bar_fill_color, scree_bar_color
+  # - Outline styling: bar_outline_color, bar_outline_width, venn_outline_*
+  # - Significance colors: col_sig_up, col_sig_down, col_nonsig
+  # - ID/Quant colors: color_quantified, color_identified
+  # - Opacity: alpha, ellipse_alpha, venn_fill_alpha
+  # - Global mean styling: global_mean_color, global_mean_size
+  # - Threshold styling: threshold_color, threshold_width, threshold_linetype
+  # - CV bin colors: cv_bin_1 through cv_bin_6, cv_bin_*_color
+  # - Other toggles: show_ellipse, show_cut_lines, show_bar_outline, show_go_id
+  # - Misc: na_color, color_palette, fdr_palette, rho_color, count_labels_color
   # =====================================================
   return("graph_elements")
 }

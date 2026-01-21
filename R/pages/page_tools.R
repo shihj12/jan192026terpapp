@@ -9,6 +9,8 @@ source(file.path("R", "pages", "tools", "tool_1dgofcs.R"), local = FALSE)
 source(file.path("R", "pages", "tools", "tool_2dgofcs.R"), local = FALSE)
 source(file.path("R", "pages", "tools", "tool_msea.R"), local = FALSE)
 source(file.path("R", "pages", "tools", "tool_class_enrichment.R"), local = FALSE)
+source(file.path("R", "pages", "tools", "tool_terpbase.R"), local = FALSE)
+source(file.path("R", "pages", "tools", "tool_metabobase.R"), local = FALSE)
 
 # ============================================================
 # Shared Utilities
@@ -80,19 +82,26 @@ tools_landing_ui <- function() {
       tags$p("Chemical class enrichment analysis for lipids, amino acids, etc."),
       actionButton("tools_open_class_enrichment", "Open Class Enrichment", class = "btn btn-primary")
     ),
+    # TerpBase Builder card
+    div(
+      class = "card",
+      tags$h3("TerpBase Builder"),
+      tags$p("Build and validate TerpBase annotation databases from UniProt exports."),
+      actionButton("tools_open_terpbase", "Open TerpBase Builder", class = "btn btn-primary")
+    ),
+    # MetaboBase Builder card
+    div(
+      class = "card",
+      tags$h3("MetaboBase Builder"),
+      tags$p("Build metabolite annotation databases from CSV or KEGG for pathway analyses."),
+      actionButton("tools_open_metabobase", "Open MetaboBase Builder", class = "btn btn-primary")
+    ),
     # QC snapshots card
     div(
       class = "card",
       tags$h3("QC Report"),
       tags$p("QC reports for raw intensity distributions and missingness."),
       tags$button(type = "button", class = "btn btn-default", disabled = "disabled", "Coming soon")
-    ),
-    # Placeholder for future tool
-    div(
-      class = "card",
-      tags$h3("More coming soon"),
-      tags$p("Additional analysis tools and utilities are in development."),
-      tags$button(type = "button", class = "btn btn-default", disabled = "disabled", "Stay tuned")
     )
   )
 }
@@ -106,8 +115,10 @@ page_tools_server <- function(input, output, session, app_state) {
   defs_2dgofcs <- tools_2dgofcs_defaults()
   defs_msea <- tools_msea_defaults()
   defs_class_enrichment <- tools_class_enrichment_defaults()
+  defs_terpbase <- tools_terpbase_defaults()
+  defs_metabobase <- tools_metabobase_defaults()
 
-  # Track which tool view is active: "landing", "goora", "1dgofcs", "2dgofcs", "msea", or "class_enrichment"
+  # Track which tool view is active
   current_tool <- reactiveVal("landing")
 
   # Reactive values for GO-ORA
@@ -174,6 +185,22 @@ page_tools_server <- function(input, output, session, app_state) {
     stored_metabolites = NULL
   )
 
+  # Reactive values for TerpBase Builder
+  rv_terpbase <- reactiveValues(
+    terp = NULL,
+    messages = character(0),
+    status_msg = NULL,
+    status_level = NULL
+  )
+
+  # Reactive values for MetaboBase Builder
+  rv_metabobase <- reactiveValues(
+    metabo = NULL,
+    messages = character(0),
+    status_msg = NULL,
+    status_level = NULL
+  )
+
   # Shared TerpBase loading function
   tools_load_terpbase <- function(path, rv_target) {
     path <- as.character(path %||% "")
@@ -218,6 +245,10 @@ page_tools_server <- function(input, output, session, app_state) {
       tools_msea_ui()
     } else if (tool == "class_enrichment") {
       tools_class_enrichment_ui()
+    } else if (tool == "terpbase") {
+      tools_terpbase_ui()
+    } else if (tool == "metabobase") {
+      tools_metabobase_ui()
     } else {
       tools_landing_ui()
     }
@@ -359,6 +390,24 @@ page_tools_server <- function(input, output, session, app_state) {
       height = input$tools_class_enrichment_height
     )
     rv_class_enrichment$stored_metabolites <- input$tools_class_enrichment_metabolites
+    current_tool("landing")
+  }, ignoreInit = TRUE)
+
+  # Navigation for TerpBase Builder
+  observeEvent(input$tools_open_terpbase, {
+    current_tool("terpbase")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_terpbase_back, {
+    current_tool("landing")
+  }, ignoreInit = TRUE)
+
+  # Navigation for MetaboBase Builder
+  observeEvent(input$tools_open_metabobase, {
+    current_tool("metabobase")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tools_metabobase_back, {
     current_tool("landing")
   }, ignoreInit = TRUE)
 
@@ -507,4 +556,6 @@ page_tools_server <- function(input, output, session, app_state) {
   tools_2dgofcs_server(input, output, session, app_state, rv_2dgofcs, defs_2dgofcs)
   tools_msea_server(input, output, session, app_state, rv_msea, defs_msea)
   tools_class_enrichment_server(input, output, session, app_state, rv_class_enrichment, defs_class_enrichment)
+  tools_terpbase_server(input, output, session, app_state, rv_terpbase)
+  tools_metabobase_server(input, output, session, app_state, rv_metabobase)
 }
