@@ -47,7 +47,7 @@ tools_metabobase_ui <- function() {
           "tools_metabobase_mode",
           NULL,
           choices = c(
-            "Build from CSV file" = "build_csv",
+            "Build from file (CSV/Excel)" = "build_csv",
             "Build from KEGG (online)" = "build_kegg",
             "Validate existing .metabobase" = "validate"
           ),
@@ -55,15 +55,17 @@ tools_metabobase_ui <- function() {
         ),
         hr(),
 
-        # Build from CSV mode
+        # Build from file mode (CSV or Excel)
         conditionalPanel(
           condition = "input.tools_metabobase_mode == 'build_csv'",
-          tags$h4("CSV Input"),
+          tags$h4("File Input"),
           fileInput(
             "tools_metabobase_csv_file",
-            "Metabolite CSV file",
-            accept = c(".csv", ".txt")
+            "Metabolite file (CSV or Excel)",
+            accept = c(".csv", ".txt", ".xlsx", ".xls")
           ),
+          uiOutput("tools_metabobase_sheet_ui"),
+          uiOutput("tools_metabobase_column_mapping_ui"),
           textInput("tools_metabobase_csv_library_name", "Library name", value = ""),
           div(
             style = "display: flex; gap: 8px; margin-top: 10px;",
@@ -92,13 +94,10 @@ tools_metabobase_ui <- function() {
           ),
           textInput("tools_metabobase_kegg_library_name", "Library name (optional)", value = ""),
           tags$p(class = "text-muted", style = "font-size: 12px;",
-            "This will fetch pathway data from the KEGG API. May require several minutes."
+            "This will fetch pathway data from the KEGG API in the background. You can continue using the app."
           ),
-          div(
-            style = "display: flex; gap: 8px; margin-top: 10px;",
-            actionButton("tools_metabobase_build_kegg", "Build from KEGG", class = "btn-primary btn-tool-action"),
-            actionButton("tools_metabobase_reset", "Reset", class = "btn btn-default btn-tool-action")
-          )
+          uiOutput("tools_metabobase_kegg_buttons_ui"),
+          uiOutput("tools_metabobase_kegg_progress_ui")
         ),
 
         # Validate mode
@@ -187,26 +186,165 @@ tools_metabobase_server <- function(input, output, session, app_state, rv_metabo
   icon_ok  <- function() tags$span(style = "color:#1a7f37;font-weight:700;margin-right:8px;", HTML("&#10003;"))
   icon_bad <- function() tags$span(style = "color:#d1242f;font-weight:700;margin-right:8px;", HTML("&#10007;"))
 
-  # CSV header validation
-  csv_header_check <- reactive({
+  # KEGG build state tracking
+  rv_kegg <- reactiveValues(
+    running = FALSE,
+    start_time = NULL,
+    organism = NULL,
+    process = NULL,      # callr process object
+    result_file = NULL   # temp file for result
+  )
+
+  # File type and Excel sheet tracking
+  rv_file <- reactiveValues(
+    is_excel = FALSE,
+    sheets = NULL,
+    columns = NULL
+  )
+
+  # Detect file type and get sheets for Excel
+  observe({
+    f <- input$tools_metabobase_csv_file
+    if (is.null(f) || is.null(f$datapath) || !nzchar(f$datapath)) {
+      rv_file$is_excel <- FALSE
+      rv_file$sheets <- NULL
+      rv_file$columns <- NULL
+      return()
+    }
+
+    ext <- tolower(tools::file_ext(f$name))
+    rv_file$is_excel <- ext %in% c("xlsx", "xls")
+
+    if (rv_file$is_excel) {
+      tryCatch({
+        rv_file$sheets <- readxl::excel_sheets(f$datapath)
+      }, error = function(e) {
+        rv_file$sheets <- NULL
+        msg_push(paste0("Error reading Excel sheets: ", conditionMessage(e)))
+      })
+    } else {
+      rv_file$sheets <- NULL
+    }
+  })
+
+  # Get columns from selected sheet or CSV
+  observe({
+    f <- input$tools_metabobase_csv_file
+    if (is.null(f) || is.null(f$datapath) || !nzchar(f$datapath)) {
+      rv_file$columns <- NULL
+      return()
+    }
+
+    tryCatch({
+      if (rv_file$is_excel) {
+        sheet <- input$tools_metabobase_sheet %||% 1
+        # Read just the header row
+        hdr <- readxl::read_excel(f$datapath, sheet = sheet, n_max = 0)
+        rv_file$columns <- names(hdr)
+      } else {
+        hdr <- read.csv(f$datapath, nrows = 0, check.names = FALSE)
+        rv_file$columns <- names(hdr)
+      }
+    }, error = function(e) {
+      rv_file$columns <- NULL
+    })
+  })
+
+  # Sheet selection UI (only for Excel files)
+  output$tools_metabobase_sheet_ui <- renderUI({
+    if (!rv_file$is_excel || is.null(rv_file$sheets)) return(NULL)
+
+    selectInput(
+      "tools_metabobase_sheet",
+      "Select sheet",
+      choices = stats::setNames(seq_along(rv_file$sheets), rv_file$sheets),
+      selected = 1
+    )
+  })
+
+  # Column mapping UI
+  output$tools_metabobase_column_mapping_ui <- renderUI({
+    cols <- rv_file$columns
+    if (is.null(cols) || length(cols) == 0) return(NULL)
+
+    # Try to auto-detect columns
+    cols_lower <- tolower(cols)
+    default_id <- which(cols_lower %in% c("metabolite_id", "id", "compound_id", "hmdb_id", "kegg_id"))[1]
+    default_name <- which(cols_lower %in% c("name", "metabolite_name", "compound_name", "metabolite"))[1]
+
+    if (is.na(default_id)) default_id <- 1
+    if (is.na(default_name)) default_name <- if (length(cols) > 1) 2 else 1
+
+    tagList(
+      tags$h5("Column Mapping", style = "margin-top: 15px;"),
+      tags$p(class = "text-muted", style = "font-size: 12px;",
+        "Select which columns contain the metabolite ID and name."
+      ),
+      div(
+        style = "display: grid; grid-template-columns: 1fr 1fr; gap: 10px;",
+        selectInput(
+          "tools_metabobase_col_id",
+          "Metabolite ID column",
+          choices = stats::setNames(cols, cols),
+          selected = cols[default_id]
+        ),
+        selectInput(
+          "tools_metabobase_col_name",
+          "Name column",
+          choices = stats::setNames(cols, cols),
+          selected = cols[default_name]
+        )
+      ),
+      tags$details(
+        style = "margin-top: 10px;",
+        tags$summary(style = "cursor: pointer; font-size: 12px; color: #666;", "Optional column mappings"),
+        div(
+          style = "margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;",
+          selectInput(
+            "tools_metabobase_col_class",
+            "Class column (optional)",
+            choices = c("(none)" = "", stats::setNames(cols, cols)),
+            selected = cols[which(cols_lower == "class")[1]] %||% ""
+          ),
+          selectInput(
+            "tools_metabobase_col_pathway",
+            "Pathway column (optional)",
+            choices = c("(none)" = "", stats::setNames(cols, cols)),
+            selected = cols[which(cols_lower %in% c("pathway", "pathway_kegg", "kegg_pathway"))[1]] %||% ""
+          )
+        )
+      )
+    )
+  })
+
+  # Validation check (now uses column mapping)
+  file_validation_check <- reactive({
     f <- input$tools_metabobase_csv_file
     if (is.null(f) || is.null(f$datapath) || !nzchar(f$datapath)) return(NULL)
 
-    tryCatch(
-      metabobase_validate_csv(f$datapath),
-      error = function(e) list(
-        ok = FALSE,
-        required = msterp_metabobase_required_csv_cols(),
-        present = character(0),
-        missing = msterp_metabobase_required_csv_cols()
-      )
-    )
+    col_id <- input$tools_metabobase_col_id
+    col_name <- input$tools_metabobase_col_name
+
+    # Check if columns are selected
+    if (is.null(col_id) || is.null(col_name) || !nzchar(col_id) || !nzchar(col_name)) {
+      return(list(ok = FALSE, message = "Please select ID and Name columns"))
+    }
+
+    list(ok = TRUE, message = "Ready to build")
   })
 
   # Clear state when new file selected
   observeEvent(input$tools_metabobase_csv_file, {
     rv_metabobase$metabo <- NULL
-    msg_push("Selected a CSV file.")
+    f <- input$tools_metabobase_csv_file
+    if (!is.null(f)) {
+      ext <- tolower(tools::file_ext(f$name))
+      if (ext %in% c("xlsx", "xls")) {
+        msg_push(paste0("Selected Excel file: ", f$name))
+      } else {
+        msg_push(paste0("Selected file: ", f$name))
+      }
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$tools_metabobase_file, {
@@ -222,20 +360,21 @@ tools_metabobase_server <- function(input, output, session, app_state, rv_metabo
     rv_metabobase$status_level <- NULL
   }, ignoreInit = TRUE)
 
-  # Build from CSV
+  # Build from file (CSV or Excel)
   observeEvent(input$tools_metabobase_build_csv, {
     req(input$tools_metabobase_csv_file)
 
-    chk <- csv_header_check()
+    # Validate column selection
+    chk <- file_validation_check()
     if (is.null(chk) || !isTRUE(chk$ok)) {
       rv_metabobase$metabo <- NULL
-      msg_push("Build blocked: missing required columns.")
-      showNotification("Missing required columns: metabolite_id, name", type = "error")
+      msg_push(paste0("Build blocked: ", chk$message %||% "Invalid configuration"))
+      showNotification(chk$message %||% "Please select ID and Name columns", type = "error")
       return()
     }
 
     rv_metabobase$metabo <- NULL
-    msg_push("Starting CSV build.")
+    msg_push("Starting build...")
 
     t0 <- Sys.time()
 
@@ -253,10 +392,23 @@ tools_metabobase_server <- function(input, output, session, app_state, rv_metabo
     set_busy(TRUE, "Starting...", 0)
     on.exit(set_busy(FALSE, "", NULL), add = TRUE)
 
+    # Get column mapping
+    col_mapping <- list(
+      metabolite_id = input$tools_metabobase_col_id,
+      name = input$tools_metabobase_col_name,
+      class = if (nzchar(input$tools_metabobase_col_class %||% "")) input$tools_metabobase_col_class else NULL,
+      pathway = if (nzchar(input$tools_metabobase_col_pathway %||% "")) input$tools_metabobase_col_pathway else NULL
+    )
+
+    # Get sheet for Excel files
+    sheet <- if (rv_file$is_excel) (input$tools_metabobase_sheet %||% 1) else NULL
+
     tryCatch({
-      metabo <- metabobase_build_from_csv(
+      metabo <- metabobase_build_from_file(
         path = input$tools_metabobase_csv_file$datapath,
         library_name = input$tools_metabobase_csv_library_name,
+        sheet = sheet,
+        col_mapping = col_mapping,
         progress_inc = progress_inc,
         progress_set = progress_set
       )
@@ -278,49 +430,145 @@ tools_metabobase_server <- function(input, output, session, app_state, rv_metabo
     })
   }, ignoreInit = TRUE)
 
-  # Build from KEGG
+  # KEGG buttons UI (dynamic based on running state)
+  output$tools_metabobase_kegg_buttons_ui <- renderUI({
+    running <- rv_kegg$running
+    div(
+      style = "display: flex; gap: 8px; margin-top: 10px;",
+      if (!running) {
+        actionButton("tools_metabobase_build_kegg", "Build from KEGG", class = "btn-primary btn-tool-action")
+      } else {
+        actionButton("tools_metabobase_cancel_kegg", "Cancel", class = "btn btn-warning btn-tool-action")
+      },
+      actionButton("tools_metabobase_reset", "Reset", class = "btn btn-default btn-tool-action")
+    )
+  })
+
+  # Build from KEGG (background task using callr)
   observeEvent(input$tools_metabobase_build_kegg, {
     organism <- input$tools_metabobase_kegg_organism %||% "hsa"
     library_name <- input$tools_metabobase_kegg_library_name
 
     rv_metabobase$metabo <- NULL
-    msg_push(paste0("Starting KEGG build for organism: ", organism))
+    rv_kegg$running <- TRUE
+    rv_kegg$start_time <- Sys.time()
+    rv_kegg$organism <- organism
+    rv_kegg$result_file <- tempfile(fileext = ".rds")
 
-    t0 <- Sys.time()
+    msg_push(paste0("Starting background KEGG build for organism: ", organism))
+    msg_push("You can continue using the app while this runs.")
 
-    set_busy(TRUE, "Connecting to KEGG...", 0)
-    on.exit(set_busy(FALSE, "", NULL), add = TRUE)
+    # Start background R process
+    rv_kegg$process <- callr::r_bg(
+      func = function(org, lib_name, out_file) {
+        # Source the metabobase engine in the subprocess
+        source("R/engines/metabobase.R", local = TRUE)
 
-    # Progress callback for KEGG build
-    progress_callback <- function(message) {
-      msg_push(message)
-      set_busy(TRUE, message, NULL)
-    }
+        result <- tryCatch({
+          metabo <- metabobase_build_kegg_library(
+            organism = org,
+            library_name = if (nzchar(lib_name %||% "")) lib_name else NULL,
+            output_file = NULL,
+            progress_callback = function(msg) message(msg)
+          )
+          list(ok = TRUE, data = metabo, error = NULL)
+        }, error = function(e) {
+          list(ok = FALSE, data = NULL, error = conditionMessage(e))
+        })
 
-    tryCatch({
-      metabo <- metabobase_build_kegg_library(
-        organism = organism,
-        library_name = if (nzchar(library_name %||% "")) library_name else NULL,
-        output_file = NULL,
-        progress_callback = progress_callback
-      )
-
-      v <- metabobase_validate(metabo)
-      if (!v$ok) stop(paste(v$errors, collapse = "\n"))
-
-      rv_metabobase$metabo <- metabo
-      app_state$metabobase <- metabo
-
-      dt_sec <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
-      msg_push(paste0("KEGG build complete. Time: ", format_hms(dt_sec)))
-      showNotification("MetaboBase built from KEGG.", type = "message")
-
-    }, error = function(e) {
-      rv_metabobase$metabo <- NULL
-      msg_push(paste0("KEGG build failed: ", conditionMessage(e)))
-      showNotification(conditionMessage(e), type = "error")
-    })
+        saveRDS(result, out_file)
+        result
+      },
+      args = list(
+        org = organism,
+        lib_name = library_name,
+        out_file = rv_kegg$result_file
+      ),
+      supervise = TRUE
+    )
   }, ignoreInit = TRUE)
+
+  # Poll for KEGG task completion
+  observe({
+    req(rv_kegg$running, rv_kegg$process)
+    invalidateLater(500, session)
+
+    proc <- rv_kegg$process
+    if (!proc$is_alive()) {
+      # Process finished
+      rv_kegg$running <- FALSE
+
+      tryCatch({
+        # Read result from temp file
+        if (file.exists(rv_kegg$result_file)) {
+          result <- readRDS(rv_kegg$result_file)
+          unlink(rv_kegg$result_file)
+
+          if (isTRUE(result$ok)) {
+            metabo <- result$data
+
+            v <- metabobase_validate(metabo)
+            if (!v$ok) stop(paste(v$errors, collapse = "\n"))
+
+            rv_metabobase$metabo <- metabo
+            app_state$metabobase <- metabo
+
+            dt_sec <- as.numeric(difftime(Sys.time(), rv_kegg$start_time, units = "secs"))
+            msg_push(paste0("KEGG build complete. Time: ", format_hms(dt_sec)))
+            showNotification("MetaboBase built from KEGG.", type = "message")
+          } else {
+            stop(result$error %||% "Unknown error")
+          }
+        } else {
+          # Check if process had an error
+          err <- tryCatch(proc$get_result(), error = function(e) conditionMessage(e))
+          stop(if (is.character(err)) err else "Process failed without result")
+        }
+      }, error = function(e) {
+        rv_metabobase$metabo <- NULL
+        msg_push(paste0("KEGG build failed: ", conditionMessage(e)))
+        showNotification(conditionMessage(e), type = "error")
+      })
+
+      rv_kegg$process <- NULL
+    }
+  })
+
+  # Cancel KEGG build
+  observeEvent(input$tools_metabobase_cancel_kegg, {
+    if (!is.null(rv_kegg$process) && rv_kegg$process$is_alive()) {
+      rv_kegg$process$kill()
+    }
+    rv_kegg$running <- FALSE
+    rv_kegg$process <- NULL
+    if (!is.null(rv_kegg$result_file) && file.exists(rv_kegg$result_file)) {
+      unlink(rv_kegg$result_file)
+    }
+    msg_push("KEGG build cancelled.")
+    showNotification("KEGG build cancelled.", type = "warning")
+  }, ignoreInit = TRUE)
+
+  # KEGG progress UI
+  output$tools_metabobase_kegg_progress_ui <- renderUI({
+    if (!rv_kegg$running) return(NULL)
+
+    elapsed <- as.numeric(difftime(Sys.time(), rv_kegg$start_time, units = "secs"))
+    invalidateLater(1000, session)
+
+    tags$div(
+      class = "kegg-progress",
+      style = "margin-top: 10px; padding: 10px; background: #f0f7ff; border-radius: 4px; border: 1px solid #b3d7ff;",
+      tags$div(
+        style = "display: flex; align-items: center; gap: 10px;",
+        tags$div(class = "spinner-border spinner-border-sm text-primary", role = "status"),
+        tags$span(paste0("Building KEGG library for ", rv_kegg$organism, "..."))
+      ),
+      tags$div(
+        style = "margin-top: 5px; font-size: 12px; color: #666;",
+        paste0("Elapsed: ", format_hms(elapsed), " - App remains responsive")
+      )
+    )
+  })
 
   # Validate existing MetaboBase
   observeEvent(input$tools_metabobase_validate, {

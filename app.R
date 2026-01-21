@@ -151,7 +151,6 @@ server <- function(input, output, session) {
   observeEvent(input$nav_newrun,   set_page("new_run"))
   observeEvent(input$nav_pipeline, set_page("pipeline"))
   observeEvent(input$nav_tools,    set_page("tools"))
-  observeEvent(input$nav_db,       set_page("database"))
   observeEvent(input$nav_tutorial, set_page("tutorial"))
   observeEvent(input$nav_about,    set_page("about"))
 
@@ -162,7 +161,7 @@ server <- function(input, output, session) {
   observeEvent(input$home_go_newrun2,  set_page("new_run"))
   observeEvent(input$home_go_pipeline, set_page("pipeline"))
   observeEvent(input$home_go_tools,    set_page("tools"))
-  observeEvent(input$home_go_db,       set_page("database"))
+  observeEvent(input$home_go_tools2,   set_page("tools"))
   observeEvent(input$home_go_tutorial, set_page("tutorial"))
   observeEvent(input$home_go_about,    set_page("about"))
 

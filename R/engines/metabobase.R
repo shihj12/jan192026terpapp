@@ -64,7 +64,220 @@ metabobase_validate_csv <- function(path) {
 }
 
 # -----------------------------
-# Build from CSV
+# Build from file (CSV or Excel) with column mapping
+# -----------------------------
+#' Build MetaboBase from a CSV or Excel file with custom column mapping
+#' @param path Path to CSV or Excel file
+#' @param library_name Optional name for this library
+#' @param sheet Sheet number or name for Excel files (ignored for CSV)
+#' @param col_mapping Named list with column mappings: metabolite_id, name, class, pathway
+#' @param progress_inc Progress callback (amount, detail)
+#' @param progress_set Progress callback (value, detail)
+#' @return MetaboBase object
+metabobase_build_from_file <- function(
+    path,
+    library_name = NULL,
+    sheet = NULL,
+    col_mapping = list(),
+    progress_inc = function(amount, detail = NULL) NULL,
+    progress_set = function(value, detail = NULL) NULL
+) {
+  # Detect file type
+
+  ext <- tolower(tools::file_ext(path))
+  is_excel <- ext %in% c("xlsx", "xls")
+
+  progress_set(0.05, if (is_excel) "Reading Excel file" else "Reading CSV file")
+
+  # Read the data
+  if (is_excel) {
+    if (!requireNamespace("readxl", quietly = TRUE)) {
+      stop("Package 'readxl' is required to read Excel files. Install with: install.packages('readxl')")
+    }
+    raw <- readxl::read_excel(path, sheet = sheet %||% 1)
+    raw <- as.data.frame(raw, stringsAsFactors = FALSE)
+  } else {
+    raw <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+  }
+
+  progress_inc(0.10, "Mapping columns")
+
+  # Get column mappings (use provided or try to auto-detect)
+  col_id <- col_mapping$metabolite_id
+  col_name <- col_mapping$name
+  col_class <- col_mapping$class
+  col_pathway <- col_mapping$pathway
+
+  # Validate required columns exist
+  if (is.null(col_id) || !col_id %in% names(raw)) {
+    stop("Metabolite ID column '", col_id %||% "(not specified)", "' not found in file")
+  }
+  if (is.null(col_name) || !col_name %in% names(raw)) {
+    stop("Name column '", col_name %||% "(not specified)", "' not found in file")
+  }
+
+  # Build base metabolite table with mapped columns
+  df_base <- tibble(
+    metabolite_id = as.character(raw[[col_id]]),
+    name = as.character(raw[[col_name]])
+  )
+
+  # Add class if mapped
+  if (!is.null(col_class) && col_class %in% names(raw)) {
+    df_base$class <- as.character(raw[[col_class]])
+  } else {
+    df_base$class <- NA_character_
+  }
+
+  # Add pathway if mapped (will be parsed as semicolon-separated)
+  if (!is.null(col_pathway) && col_pathway %in% names(raw)) {
+    df_base$pathway_kegg <- as.character(raw[[col_pathway]])
+  } else {
+    df_base$pathway_kegg <- NA_character_
+  }
+
+  # Try to auto-detect other columns by common names
+  cols_lower <- tolower(names(raw))
+  col_idx <- function(patterns) {
+    for (p in patterns) {
+      idx <- which(cols_lower == p)[1]
+      if (!is.na(idx)) return(names(raw)[idx])
+    }
+    NULL
+  }
+
+  # Map additional columns if present
+  df_base$hmdb_id <- if (!is.null(c <- col_idx(c("hmdb_id", "hmdb")))) as.character(raw[[c]]) else NA_character_
+
+  df_base$kegg_id <- if (!is.null(c <- col_idx(c("kegg_id", "kegg", "kegg_compound")))) as.character(raw[[c]]) else NA_character_
+  df_base$chebi_id <- if (!is.null(c <- col_idx(c("chebi_id", "chebi")))) as.character(raw[[c]]) else NA_character_
+  df_base$pubchem_id <- if (!is.null(c <- col_idx(c("pubchem_id", "pubchem", "pubchem_cid")))) as.character(raw[[c]]) else NA_character_
+  df_base$inchikey <- if (!is.null(c <- col_idx(c("inchikey", "inchi_key")))) as.character(raw[[c]]) else NA_character_
+  df_base$formula <- if (!is.null(c <- col_idx(c("formula", "molecular_formula")))) as.character(raw[[c]]) else NA_character_
+  df_base$subclass <- if (!is.null(c <- col_idx(c("subclass", "sub_class")))) as.character(raw[[c]]) else NA_character_
+  df_base$superclass <- if (!is.null(c <- col_idx(c("superclass", "super_class")))) as.character(raw[[c]]) else NA_character_
+  df_base$pathway_reactome <- if (!is.null(c <- col_idx(c("pathway_reactome", "reactome", "reactome_pathway")))) as.character(raw[[c]]) else NA_character_
+
+  # Clean up empty strings to NA
+  df_base <- df_base %>%
+    mutate(across(everything(), ~ifelse(. == "" | . == "NA", NA_character_, .)))
+
+  # Remove rows with missing ID
+  df_base <- df_base %>% filter(!is.na(metabolite_id), metabolite_id != "")
+
+  progress_inc(0.15, "Building pathway tables")
+
+  # Parse KEGG pathways (semicolon-separated)
+  kegg_long <- df_base %>%
+    filter(!is.na(pathway_kegg), pathway_kegg != "") %>%
+    select(metabolite_id, pathway_kegg) %>%
+    mutate(pathway_items = strsplit(pathway_kegg, ";", fixed = TRUE)) %>%
+    unnest(pathway_items) %>%
+    mutate(
+      pathway_items = str_trim(pathway_items),
+      pathway_type = "KEGG"
+    ) %>%
+    filter(pathway_items != "") %>%
+    transmute(
+      metabolite_id,
+      pathway_id = pathway_items,
+      pathway_type
+    )
+
+  # Parse Reactome pathways (semicolon-separated)
+  reactome_long <- df_base %>%
+    filter(!is.na(pathway_reactome), pathway_reactome != "") %>%
+    select(metabolite_id, pathway_reactome) %>%
+    mutate(pathway_items = strsplit(pathway_reactome, ";", fixed = TRUE)) %>%
+    unnest(pathway_items) %>%
+    mutate(
+      pathway_items = str_trim(pathway_items),
+      pathway_type = "Reactome"
+    ) %>%
+    filter(pathway_items != "") %>%
+    transmute(
+      metabolite_id,
+      pathway_id = pathway_items,
+      pathway_type
+    )
+
+  # Combine pathway annotations
+  annot_long <- bind_rows(kegg_long, reactome_long) %>%
+    filter(!is.na(metabolite_id), metabolite_id != "")
+
+  progress_inc(0.20, "Building class tables")
+
+  # Build class annotations (for class enrichment)
+  class_long <- df_base %>%
+    filter(!is.na(class), class != "") %>%
+    select(metabolite_id, class) %>%
+    mutate(class_type = "class")
+
+  progress_inc(0.25, "Building term summaries")
+
+  # Build pathway term summaries
+  if (nrow(annot_long) > 0) {
+    terms_by_id <- annot_long %>%
+      group_by(pathway_type, pathway_id) %>%
+      summarise(
+        term_metabolites = list(sort(unique(metabolite_id))),
+        n_metabolites = length(unique(metabolite_id)),
+        .groups = "drop"
+      ) %>%
+      rename(term_id = pathway_id, term_type = pathway_type)
+  } else {
+    terms_by_id <- tibble(
+      term_type = character(),
+      term_id = character(),
+      term_metabolites = list(),
+      n_metabolites = integer()
+    )
+  }
+
+  # Build class term summaries
+  if (nrow(class_long) > 0) {
+    class_terms <- class_long %>%
+      group_by(class) %>%
+      summarise(
+        term_metabolites = list(sort(unique(metabolite_id))),
+        n_metabolites = length(unique(metabolite_id)),
+        .groups = "drop"
+      ) %>%
+      mutate(term_type = "class") %>%
+      rename(term_id = class) %>%
+      select(term_type, term_id, term_metabolites, n_metabolites)
+
+    terms_by_id <- bind_rows(terms_by_id, class_terms)
+  }
+
+  progress_set(0.90, "Finalizing")
+
+  # Determine library name
+  if (is.null(library_name) || !nzchar(library_name)) {
+    library_name <- tools::file_path_sans_ext(basename(path))
+  }
+
+  # Build the metabobase object
+ metabobase <- list(
+    schema_version = METABOBASE_SCHEMA_VERSION,
+    library_name = library_name,
+    organism = "user-defined",
+    built_at = Sys.time(),
+    n_metabolites = nrow(df_base),
+    metabolite_meta = df_base,
+    annot_long = annot_long,
+    class_long = class_long,
+    terms_by_id = terms_by_id
+  )
+
+  class(metabobase) <- c("metabobase", "list")
+
+  progress_set(1.0, "Done")
+  metabobase
+}
+
+# -----------------------------
+# Build from CSV (legacy, uses build_from_file internally)
 # -----------------------------
 #' Build MetaboBase from a CSV file
 #' @param path Path to CSV file with metabolite annotations

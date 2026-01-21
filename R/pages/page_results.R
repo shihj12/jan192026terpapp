@@ -4143,9 +4143,13 @@ page_results_server <- function(input, output, session) {
       )
     }))
 
-    # Build special controls for volcano, 2dgofcs, and spearman at top of style panel
+    # Build special controls for engines with comparison selector at top of style panel
     mode_controls <- NULL
-    if (eng_lower %in% c("volcano", "2dgofcs", "spearman")) {
+    idquant_engines <- c(
+      "idquant", "idquant_id_quant", "idquant_average_value", "idquant_cv_scatter", "idquant_cv_bar",
+      "idquant_overlap", "idquant_overlap_detected", "idquant_overlap_quantified"
+    )
+    if (eng_lower %in% c("volcano", "2dgofcs", "spearman", idquant_engines)) {
       plot_names <- rv$current_plot_names %||% character()
       has_multi_plots <- length(plot_names) > 1
 
@@ -4758,8 +4762,12 @@ page_results_server <- function(input, output, session) {
       # Store plot names for right panel selector (volcano/2dgofcs)
       rv$current_plot_names <- plot_names
 
-      # For volcano/2dgofcs: selector moves to right panel; for others: show inline if multiple
-      engines_with_right_panel_selector <- c("volcano", "2dgofcs")
+      # For these engines: selector moves to right panel (styles); for others: show inline if multiple
+      engines_with_right_panel_selector <- c(
+        "volcano", "2dgofcs", "spearman",
+        "idquant", "idquant_id_quant", "idquant_average_value", "idquant_cv_scatter", "idquant_cv_bar",
+        "idquant_overlap", "idquant_overlap_detected", "idquant_overlap_quantified"
+      )
       show_inline_pick <- length(plot_names) > 1 &&
                           !identical(eng, "pca") &&
                           !(tolower(eng %||% "") %in% engines_with_right_panel_selector)

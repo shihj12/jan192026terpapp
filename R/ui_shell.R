@@ -1385,7 +1385,6 @@ msterp_theme_head <- function() {
         'new_run': 'nav_newrun',
         'pipeline': 'nav_pipeline',
         'tools': 'nav_tools',
-        'database': 'nav_db',
         'tutorial': 'nav_tutorial',
         'about': 'nav_about'
       };
@@ -1486,7 +1485,6 @@ msterp_sidebar_ui <- function(about_logo = "static/img/about.svg",
                               home_logo = "static/img/home.svg",
                               new_run_logo = "static/img/newrun.svg",
                               results_logo = "static/img/results.svg",
-                              terpbase_logo = "static/img/terpbase.svg",
                               tools_logo = "static/img/tools.svg",
                               tutorial_logo = "static/img/tutorial.svg"
 ) {
@@ -1501,7 +1499,7 @@ msterp_sidebar_ui <- function(about_logo = "static/img/about.svg",
       title = text
     )
   }
-  
+
   div(
     class = "msterp-sidebar",
     tags$button(id = "sidebar_toggle", class = "sidebar-toggle", type = "button", ">"),
@@ -1513,7 +1511,6 @@ msterp_sidebar_ui <- function(about_logo = "static/img/about.svg",
       nav_item("nav_newrun",   "New run",  new_run_logo),
       nav_item("nav_pipeline", "TerpFlow", flow_logo),
       nav_item("nav_tools",    "Tools",    tools_logo),
-      nav_item("nav_db",       "TerpBase", terpbase_logo),
       nav_item("nav_tutorial", "Tutorial", tutorial_logo),
       nav_item("nav_about",    "About",    about_logo)
     )

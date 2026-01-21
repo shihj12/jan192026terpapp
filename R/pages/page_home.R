@@ -275,9 +275,9 @@ page_home_ui <- function() {
             div(
               class = "wf-card",
               div(class = "wf-step", "02"),
-              div(class = "wf-title", "Build TerpBase"),
-              div(class = "wf-desc", "Build custom libraries"),
-              actionButton("home_go_db", "Open TerpBase", class = "wf-link wf-button")
+              div(class = "wf-title", "Build databases"),
+              div(class = "wf-desc", "Create custom databases"),
+              actionButton("home_go_tools2", "Open Tools", class = "wf-link wf-button")
             ),
             div(
               class = "wf-card",
