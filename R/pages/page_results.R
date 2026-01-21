@@ -113,35 +113,57 @@ res_collapse_section_ui <- function(id, title, badge_text = NULL, open = FALSE, 
 
 # ---- Style field grouping for collapsible sections -------------------------
 # Returns section name for a given style field
+# Returns NULL for selectors that should stay at top (not in accordion)
 get_style_section <- function(field_name) {
-  # Order matters - first match wins
-  if (field_name %in% c("plot_type", "layout", "transform", "acquisition_mode",
-                        "label_mode") ||
-      (grepl("^show_", field_name) && !grepl("(outline|line|mean|rho|equation|go_id)", field_name))) {
-    return("basic")
+  # =====================================================
+  # SELECTORS / TOGGLES - NOT in any accordion (return NULL)
+  # These remain always-visible at the top of the style panel
+  # =====================================================
+  selector_fields <- c(
+    "overlap_plot_type", "view_mode", "ontology_filter", "selected_group",
+    "plot_type", "layout", "transform", "acquisition_mode", "color_mode"
+  )
+  if (field_name %in% selector_fields) return(NULL)
+
+  # =====================================================
+  # LABELS section
+  # Text labels, annotations, titles, font sizes, show/hide toggles for text
+
+  # =====================================================
+  if (grepl("label|text|title|font|rotation", field_name, ignore.case = TRUE)) {
+    return("labels")
   }
-  if (grepl("color|palette|alpha", field_name)) return("colors")
-  if (grepl("label|text|title|font|rotation|rho_position", field_name)) return("labels")
-  if (grepl("outline|line|ref_|diagonal|cut_", field_name)) return("lines")
-  if (grepl("mean|global_mean", field_name)) return("mean_stats")
-  if (grepl("axis|range|min$|max$|pool", field_name)) return("axis_range")
-  if (grepl("^(width|height|point_size)$", field_name)) return("dimensions")
-  if (grepl("^cv_bin|^num_bins", field_name)) return("cv_binning")
-  if (grepl("^venn_", field_name)) return("venn")
-  return("basic")  # fallback
+  # Specific label-related fields (show toggles for text elements)
+  label_fields <- c(
+    "show_rho", "show_equation", "show_n", "show_percentage", "show_group_names",
+    "show_sig_labels", "show_summary_cards", "show_values", "venn_show_percentage",
+    "rho_position_x", "rho_position_y"
+  )
+  if (field_name %in% label_fields) return("labels")
+
+  # =====================================================
+  # AXIS ELEMENTS section
+  # Axis styling, ranges, min/max values, dimensions
+  # =====================================================
+  if (grepl("axis|range|_min$|_max$|^x_|^y_|^xy_", field_name, ignore.case = TRUE)) {
+    return("axis_elements")
+  }
+  axis_fields <- c("width", "height", "pool")
+  if (field_name %in% axis_fields) return("axis_elements")
+
+  # =====================================================
+  # GRAPH ELEMENTS section (default)
+  # Points, lines, colors, fills, opacity, shapes, outlines, etc.
+  # =====================================================
+  return("graph_elements")
 }
 
 # Section display names and default open states
+# Grouped into 3 accordion sections; selectors (returning NULL) stay at top
 STYLE_SECTIONS <- list(
-  basic = list(title = "Basic", open = TRUE),
-  colors = list(title = "Colors", open = FALSE),
-  labels = list(title = "Labels & Text", open = FALSE),
-  lines = list(title = "Lines & Outlines", open = FALSE),
-  mean_stats = list(title = "Mean & Statistics", open = FALSE),
-  axis_range = list(title = "Axis & Range", open = FALSE),
-  dimensions = list(title = "Size & Dimensions", open = FALSE),
-  cv_binning = list(title = "CV Binning", open = FALSE),
-  venn = list(title = "Venn Diagram", open = FALSE)
+  labels = list(title = "Labels", open = TRUE),
+  graph_elements = list(title = "Graph Elements", open = FALSE),
+  axis_elements = list(title = "Axis Elements", open = FALSE)
 )
 
 # ---- GO table helper functions (visibility checkbox + copy genes button) ----------
@@ -1025,6 +1047,24 @@ res_wrap_conditionals <- function(node_id, field, ui) {
   if (grepl("^venn_", fname) && is.null(cond)) {
     ctrl_plot <- res_field_input_id(node_id, "overlap_plot_type")
     cond <- sprintf("input['%s'] == 'venn'", ctrl_plot)
+  }
+
+  # IDQuant overlap: UpSet-only controls
+  upset_only_fields <- c("count_labels_show", "show_bar_outline", "bar_outline_color", "bar_fill_color")
+  if (fname %in% upset_only_fields && is.null(cond)) {
+    ctrl_plot <- res_field_input_id(node_id, "overlap_plot_type")
+    cond <- sprintf("input['%s'] == 'upset'", ctrl_plot)
+  }
+
+  # PCA: Scores-only controls (visible when NOT showing scree)
+  pca_scores_fields <- c("point_size", "point_alpha", "show_ellipse", "ellipse_alpha")
+  if (fname %in% pca_scores_fields && is.null(cond)) {
+    cond <- "input['res_pca_is_scree'] != true"
+  }
+
+  # PCA: Scree-only controls (visible when showing scree)
+  if (grepl("^scree_", fname) && is.null(cond)) {
+    cond <- "input['res_pca_is_scree'] == true"
   }
 
   # Hor_dis: mean_type only visible when show_mean is true
@@ -3962,16 +4002,61 @@ page_results_server <- function(input, output, session) {
       }
     }
 
-    fields <- tagList(lapply(schema, function(f) {
+    # =====================================================
+    # Categorize fields into sections using get_style_section()
+    # Fields returning NULL go at top (selectors), others into accordions
+    # =====================================================
+    selector_fields <- list()
+    section_fields <- list(
+      labels = list(),
+      graph_elements = list(),
+      axis_elements = list()
+    )
+
+    for (f in schema) {
+      section <- get_style_section(f$name)
+      if (is.null(section)) {
+        selector_fields <- c(selector_fields, list(f))
+      } else {
+        section_fields[[section]] <- c(section_fields[[section]], list(f))
+      }
+    }
+
+    # Build UI for selector fields (always visible at top, outside accordions)
+    selectors_ui <- tagList(lapply(selector_fields, function(f) {
       v_eff <- eff$style[[f$name]] %||% f$default
-      # Pass dynamic choices for selected_group field (in case it wasn't extracted above)
       dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
       res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
     }))
 
-    # Build special controls for volcano and 2dgofcs at top of style panel
+    # Build accordion panels for each section
+    accordions_ui <- tagList(lapply(names(STYLE_SECTIONS), function(section_name) {
+      section_def <- STYLE_SECTIONS[[section_name]]
+      fields_in_section <- section_fields[[section_name]]
+
+      # Skip empty sections
+      if (length(fields_in_section) == 0) return(NULL)
+
+      # Build field UIs for this section
+      field_uis <- tagList(lapply(fields_in_section, function(f) {
+        v_eff <- eff$style[[f$name]] %||% f$default
+        dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
+        res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
+      }))
+
+      # Create collapsible section with field count badge
+      res_collapse_section_ui(
+        id = paste0("style_section_", section_name),
+        title = section_def$title,
+        badge_text = as.character(length(fields_in_section)),
+        open = isTRUE(section_def$open),
+        field_uis
+      )
+    }))
+
+    # Build special controls for volcano, 2dgofcs, and spearman at top of style panel
     mode_controls <- NULL
-    if (eng_lower %in% c("volcano", "2dgofcs")) {
+    if (eng_lower %in% c("volcano", "2dgofcs", "spearman")) {
       plot_names <- rv$current_plot_names %||% character()
       has_multi_plots <- length(plot_names) > 1
 
@@ -4024,7 +4109,8 @@ page_results_server <- function(input, output, session) {
       axis_ui,
       mode_controls,
       selected_group_ui,  # Group selector at top for hor_dis/vert_dis (conditional on within_groups mode)
-      fields
+      selectors_ui,       # Selector fields (always visible, not in accordions)
+      accordions_ui       # Accordion panels for grouped fields
       # Apply button and reset override removed - updates happen automatically
     )
   })
