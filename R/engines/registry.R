@@ -1269,7 +1269,9 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
           msterp_schema_field("scree_bar_color", "string", "Scree bar color (hex)",
                               default = "#4682B4", advanced = TRUE),
           msterp_schema_field("scree_line_color", "string", "Scree line color (hex)",
-                              default = "#E74C3C", advanced = TRUE)
+                              default = "#E74C3C", advanced = TRUE),
+          msterp_schema_field("scree_text_size", "num", "Scree text size",
+                              default = 3.5, min = 1, max = 10, advanced = TRUE)
         ),
         mk_style(width = 7, height = 5, axis_text_size = 20)
       ),
@@ -1803,7 +1805,10 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
           msterp_schema_field("diagonal_guide_size", "num", "Diagonal guide thickness",
                               default = 1, min = 0.2, max = 5, advanced = TRUE),
           msterp_schema_field("label_font_size", "int", "Label font size",
-                              default = 12, min = 6, max = 30, advanced = TRUE)
+                              default = 12, min = 6, max = 30, advanced = TRUE),
+          msterp_schema_field("show_go_id", "bool", "Show GO ID in labels", default = FALSE,
+                              help = "Display GO ID beside term name (e.g., 'Term Name (GO:0000000)')",
+                              advanced = TRUE)
         ),
         mk_style(width = 8, height = 6, axis_text_size = 20),
         list(

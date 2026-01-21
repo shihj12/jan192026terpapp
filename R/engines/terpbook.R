@@ -1027,10 +1027,11 @@ tb_volcano_plotly <- function(df, style, meta, xlim, ylim, labs, saved, comparis
           line = list(color = "#333333", width = 1)
         )))
 
-        # Label annotation (draggable)
+        # Label annotation (draggable) - add small Y offset to separate from line endpoint
+        label_y_offset <- 0.02 * diff(ylim)
         annotations <- c(annotations, list(list(
           x = lx,
-          y = ly,
+          y = ly + label_y_offset,
           text = id,
           xref = "x",
           yref = "y",
@@ -1203,6 +1204,13 @@ tb_2dgofcs_plotly <- function(df_plot, style, meta, xlim, ylim, labs, saved, x_l
       for (i in seq_len(nrow(df_lab))) {
         term_id <- as.character(df_lab$term_id[[i]] %||% df_lab$term_original[[i]] %||% df_lab$term[[i]])
         display_term <- as.character(df_lab$term[[i]])
+        # Append GO ID if enabled (without resetting custom labels)
+        if (isTRUE(style$show_go_id) && !is.null(term_id) && nzchar(term_id)) {
+          # Only append if not already present
+          if (!grepl(term_id, display_term, fixed = TRUE)) {
+            display_term <- paste0(display_term, " (", term_id, ")")
+          }
+        }
         s <- saved[[term_id]] %||% saved[[df_lab$term_original[[i]]]] %||% saved[[display_term]] %||% list()
 
         # Get saved position or compute default
@@ -1247,10 +1255,11 @@ tb_2dgofcs_plotly <- function(df_plot, style, meta, xlim, ylim, labs, saved, x_l
           line = list(color = "#333333", width = 1)
         )))
 
-        # Label annotation (draggable)
+        # Label annotation (draggable) - add small Y offset to separate from line endpoint
+        label_y_offset <- 0.015 * diff(ylim)
         annotations <- c(annotations, list(list(
           x = lx,
-          y = ly,
+          y = ly + label_y_offset,
           text = display_term,
           xref = "x",
           yref = "y",
@@ -4717,7 +4726,7 @@ tb_render_pca <- function(results, style, meta) {
     ggplot2::geom_text(
       ggplot2::aes(label = sprintf("%.1f%%", var), y = label_y),
       vjust = 0,
-      size = 3.5
+      size = tb_num(style$scree_text_size, 3.5)
     ) +
     ggplot2::scale_y_continuous(
       limits = c(0, 100),

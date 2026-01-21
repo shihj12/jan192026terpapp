@@ -3906,6 +3906,22 @@ page_results_server <- function(input, output, session) {
       axis_ui <- res_field_ui(rv$active_node_id, axis_field, value_override = v_eff)
     }
 
+    # Extract ontology_filter for enrichment engines and render at top of style panel
+    ontology_filter_field <- NULL
+    if (eng_lower %in% c("1dgofcs", "2dgofcs", "goora")) {
+      ont_idx <- which(vapply(schema, function(f) identical(as.character(f$name %||% ""), "ontology_filter"), logical(1)))
+      if (length(ont_idx) > 0) {
+        ontology_filter_field <- schema[[ont_idx[[1]]]]
+        schema <- schema[-ont_idx[[1]]]
+      }
+    }
+
+    ontology_filter_ui <- NULL
+    if (!is.null(ontology_filter_field)) {
+      v_eff <- eff$style[[ontology_filter_field$name]] %||% ontology_filter_field$default
+      ontology_filter_ui <- res_field_ui(rv$active_node_id, ontology_filter_field, value_override = v_eff)
+    }
+
     # Extract group names from results for selected_group dropdown (hor_dis, vert_dis)
     group_choices <- NULL
     if (eng_lower %in% c("hor_dis", "vert_dis")) {
@@ -4004,6 +4020,7 @@ page_results_server <- function(input, output, session) {
     tagList(
       h4("Style"),
       view_mode_ui,
+      ontology_filter_ui,  # Ontology selector at top for enrichment engines (1dgofcs, 2dgofcs, goora)
       axis_ui,
       mode_controls,
       selected_group_ui,  # Group selector at top for hor_dis/vert_dis (conditional on within_groups mode)
