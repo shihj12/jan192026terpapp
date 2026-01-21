@@ -1235,12 +1235,16 @@ page_results_ui <- function() {
         $(document).on('click', '.collapse-header', function(e) {
           e.stopPropagation();
           var $section = $(this).closest('.collapse-section');
+
+          // Safety: ensure section element exists before operating
+          if (!$section || $section.length === 0) return;
+
           $section.toggleClass('open');
 
           // Report accordion state to Shiny for persistence
           var sectionId = $section.attr('id');
           var isOpen = $section.hasClass('open');
-          if (sectionId && Shiny.setInputValue) {
+          if (sectionId && typeof Shiny !== 'undefined' && Shiny.setInputValue) {
             Shiny.setInputValue('res_accordion_state', {id: sectionId, open: isOpen}, {priority: 'event'});
           }
         });
@@ -1406,7 +1410,8 @@ page_results_ui <- function() {
           padding: 0 12px;
         }
         .collapse-section.open .collapse-body {
-          max-height: 800px;
+          max-height: 2000px;  /* Generous limit to avoid content truncation */
+          overflow-y: auto;    /* Allow scrolling if content exceeds limit */
           padding: 12px;
         }
 
@@ -2353,7 +2358,10 @@ page_results_server <- function(input, output, session) {
   # ---- Accordion state persistence -------------------------------------------
   observeEvent(input$res_accordion_state, {
     state <- input$res_accordion_state
-    if (!is.null(state$id) && !is.null(state$open)) {
+    # Validate state structure before storing
+    if (is.list(state) &&
+        !is.null(state$id) && is.character(state$id) && nzchar(state$id) &&
+        !is.null(state$open) && is.logical(state$open)) {
       rv$accordion_state[[state$id]] <- state$open
     }
   }, ignoreNULL = TRUE, ignoreInit = TRUE)
@@ -4106,10 +4114,16 @@ page_results_server <- function(input, output, session) {
     }
 
     # Build UI for selector fields (always visible at top, outside accordions)
+    # Wrap in tryCatch for robustness - prevents entire panel crash if one field fails
     selectors_ui <- tagList(lapply(selector_fields, function(f) {
-      v_eff <- eff$style[[f$name]] %||% f$default
-      dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
-      res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
+      tryCatch({
+        v_eff <- eff$style[[f$name]] %||% f$default
+        dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
+        res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
+      }, error = function(e) {
+        warning(sprintf("Failed to render style field '%s': %s", f$name %||% "unknown", e$message))
+        NULL
+      })
     }))
 
     # Build accordion panels for each section
@@ -4121,10 +4135,16 @@ page_results_server <- function(input, output, session) {
       if (length(fields_in_section) == 0) return(NULL)
 
       # Build field UIs for this section
+      # Wrap in tryCatch for robustness - prevents entire accordion crash if one field fails
       field_uis <- tagList(lapply(fields_in_section, function(f) {
-        v_eff <- eff$style[[f$name]] %||% f$default
-        dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
-        res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
+        tryCatch({
+          v_eff <- eff$style[[f$name]] %||% f$default
+          dyn_choices <- if (identical(f$name, "selected_group")) group_choices else NULL
+          res_field_ui(rv$active_node_id, f, value_override = v_eff, dynamic_choices = dyn_choices)
+        }, error = function(e) {
+          warning(sprintf("Failed to render style field '%s': %s", f$name %||% "unknown", e$message))
+          NULL
+        })
       }))
 
       # Determine open state: use persisted state if available, else default
