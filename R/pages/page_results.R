@@ -5524,31 +5524,71 @@ page_results_server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   # 2D GOFCS plotly relayout handler (for annotation dragging only - no click actions)
+  # FIX: Use observeEvent with dynamically bound sources to prevent reactive loops.
+  # The previous observe() block caused infinite busy state because:
+  # 1. active_effective_state() depends on style_rev()
+  # 2. When label is dragged, res_update_plotly_labels() increments style_rev()
+  # 3. This triggered the observe to re-run, creating a feedback loop
+  #
+  # Solution: Bind separate observeEvent handlers for each tab's plotly source,
+  # storing bound state in session$userData to prevent duplicate bindings.
   observe({
     eng <- tolower(active_engine_id() %||% "")
     if (!identical(eng, "2dgofcs")) return()
 
-    st <- active_effective_state()
+    # Only check if interactive mode is enabled (isolated to prevent loop)
+    st <- isolate(active_effective_state())
     style <- st$style %||% list()
     if (!isTRUE(res_is_interactive_view(style))) return()
 
-    plot_key <- res_active_plot_name() %||% ""
-    source_name <- paste0("gofcs_plotly_", plot_key)
+    # Get available plot keys for 2dgofcs (typically bp_plot, mf_plot, cc_plot)
+    rend <- isolate(active_rendered())
+    if (is.null(rend) || inherits(rend, "error")) return()
 
-    # NOTE: No click handler for 2dgofcs - clicking does nothing
-    # Labels are added via the styles panel text input only
+    plot_keys <- c("bp_plot", "mf_plot", "cc_plot")  # Standard 2dgofcs tabs
+    if (!is.null(rend$tabs)) {
+      plot_keys <- paste0(gsub(" ", "_", tolower(rend$tabs)), "_plot")
+    }
 
-    # Bind relayout handler for annotation dragging
-    relayout_data <- event_data("plotly_relayout", source = source_name)
-    if (!is.null(relayout_data)) {
-      res <- active_results()
-      if (!is.null(res)) {
-        visibility <- st$visibility %||% list()
-        plotly_state <- st$plotly %||% list()
-        state <- res_2dgofcs_plot_state(res, style, visibility, plot_key, plotly_state)
-        if (!is.null(state)) {
-          labs <- state$labs
-          if (length(labs) > 0) {
+    # Initialize binding tracker
+    if (is.null(session$userData$res_2dgofcs_relayout_bound)) {
+      session$userData$res_2dgofcs_relayout_bound <- new.env(parent = emptyenv())
+    }
+    bound <- session$userData$res_2dgofcs_relayout_bound
+
+    for (pk in plot_keys) {
+      local({
+        plot_key_local <- pk
+        source_name <- paste0("gofcs_plotly_", plot_key_local)
+        bind_key <- paste0("relayout|", source_name)
+
+        if (!exists(bind_key, envir = bound, inherits = FALSE)) {
+          assign(bind_key, TRUE, envir = bound)
+
+          # NOTE: observeEvent on event_data only triggers on actual events, not reactive changes
+          observeEvent(event_data("plotly_relayout", source = source_name), {
+            relayout_data <- event_data("plotly_relayout", source = source_name)
+            if (is.null(relayout_data)) return()
+
+            # Isolate all reactive reads to prevent cascade
+            eng_check <- isolate(tolower(active_engine_id() %||% ""))
+            if (!identical(eng_check, "2dgofcs")) return()
+
+            st <- isolate(active_effective_state())
+            style <- st$style %||% list()
+            if (!isTRUE(res_is_interactive_view(style))) return()
+
+            res <- isolate(active_results())
+            if (is.null(res)) return()
+
+            visibility <- st$visibility %||% list()
+            plotly_state <- st$plotly %||% list()
+            state <- res_2dgofcs_plot_state(res, style, visibility, plot_key_local, plotly_state)
+            if (is.null(state)) return()
+
+            labs <- state$labs
+            if (length(labs) == 0) return()
+
             updated <- FALSE
             for (key in names(relayout_data)) {
               if (grepl("^annotations\\[\\d+\\]\\.(x|y)$", key)) {
@@ -5559,21 +5599,15 @@ page_results_server <- function(input, output, session) {
                   value <- relayout_data[[key]]
 
                   if (idx >= 1 && idx <= length(labs)) {
-                    # Get term_id directly from df_plot at the same index
-                    # This matches how annotations were created in tb_2dgofcs_plotly
                     df_plot <- state$df_plot
-                    # df_lab in tb_2dgofcs_plotly is df_plot[df_plot$term %in% labs, ] which
-                    # keeps all rows (since labs = df_plot$term), so annotation idx maps to df_plot[idx,]
                     df_lab <- df_plot[df_plot$term %in% labs, , drop = FALSE]
                     if (idx <= nrow(df_lab)) {
                       term_row <- df_lab[idx, , drop = FALSE]
                       term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term_row$term[1])
 
-                      # Update plotly state with new position (normalized from data coords to [0,1])
-                      res_update_plotly_labels(plot_key, function(cur_labels) {
+                      res_update_plotly_labels(plot_key_local, function(cur_labels) {
                         if (is.null(cur_labels[[term_id]])) cur_labels[[term_id]] <- list()
 
-                        # Normalize the new coordinate value from data coords to [0,1]
                         if (coord == "x") {
                           norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
                           cur_labels[[term_id]]$x <- norm$x[[1]]
@@ -5582,7 +5616,6 @@ page_results_server <- function(input, output, session) {
                           cur_labels[[term_id]]$y <- norm$y[[1]]
                         }
 
-                        # Store current axis ranges for denormalization on render
                         cur_labels[[term_id]]$x_range <- state$xlim
                         cur_labels[[term_id]]$y_range <- state$ylim
                         cur_labels
@@ -5599,9 +5632,9 @@ page_results_server <- function(input, output, session) {
               rv$save_status <- "dirty"
               style_rev(isolate(style_rev()) + 1L)
             }
-          }
+          }, ignoreInit = TRUE)
         }
-      }
+      })
     }
   })
 
