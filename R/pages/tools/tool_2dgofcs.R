@@ -239,6 +239,44 @@ tools_2dgofcs_ui <- function() {
             max = 24,
             step = 0.5
           )
+        ),
+        tools_collapse_section_ui(
+          "tools_2dgofcs_filter_section",
+          "Table Filters",
+          open = FALSE,
+          numericInput(
+            "tools_2dgofcs_filter_score_x_min",
+            "Min score X",
+            value = NA,
+            step = 0.1
+          ),
+          numericInput(
+            "tools_2dgofcs_filter_score_y_min",
+            "Min score Y",
+            value = NA,
+            step = 0.1
+          ),
+          numericInput(
+            "tools_2dgofcs_filter_n_genes_min",
+            "Min # genes",
+            value = NA,
+            min = 1,
+            step = 1
+          ),
+          numericInput(
+            "tools_2dgofcs_filter_fdr_max",
+            "Max FDR",
+            value = NA,
+            min = 0,
+            max = 1,
+            step = 0.001
+          ),
+          actionButton(
+            "tools_2dgofcs_filter_clear",
+            "Clear Filters",
+            class = "btn btn-default btn-sm",
+            style = "margin-top: 8px;"
+          )
         )
       ),
       right_ui = div(
@@ -773,6 +811,48 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
   res = 150
   )
 
+  # Clear filters button handler
+  observeEvent(input$tools_2dgofcs_filter_clear, {
+    updateNumericInput(session, "tools_2dgofcs_filter_score_x_min", value = NA)
+    updateNumericInput(session, "tools_2dgofcs_filter_score_y_min", value = NA)
+    updateNumericInput(session, "tools_2dgofcs_filter_n_genes_min", value = NA)
+    updateNumericInput(session, "tools_2dgofcs_filter_fdr_max", value = NA)
+  }, ignoreInit = TRUE)
+
+  # Helper function to apply table filters
+  apply_2dgofcs_table_filters <- function(df) {
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
+
+    # Filter by score_x min
+    score_x_min <- input$tools_2dgofcs_filter_score_x_min
+    if (!is.null(score_x_min) && is.finite(score_x_min) && "score_x" %in% names(df)) {
+      df <- df[!is.na(df$score_x) & df$score_x >= score_x_min, , drop = FALSE]
+    }
+
+    # Filter by score_y min
+    score_y_min <- input$tools_2dgofcs_filter_score_y_min
+    if (!is.null(score_y_min) && is.finite(score_y_min) && "score_y" %in% names(df)) {
+      df <- df[!is.na(df$score_y) & df$score_y >= score_y_min, , drop = FALSE]
+    }
+
+    # Filter by n_genes min (column may be n, n_genes, or count)
+    n_min <- input$tools_2dgofcs_filter_n_genes_min
+    if (!is.null(n_min) && is.finite(n_min)) {
+      n_col <- intersect(c("n_genes", "n", "count", "Count"), names(df))[1]
+      if (!is.na(n_col)) {
+        df <- df[!is.na(df[[n_col]]) & df[[n_col]] >= n_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by FDR max
+    fdr_max <- input$tools_2dgofcs_filter_fdr_max
+    if (!is.null(fdr_max) && is.finite(fdr_max) && "fdr" %in% names(df)) {
+      df <- df[!is.na(df$fdr) & df$fdr <= fdr_max, , drop = FALSE]
+    }
+
+    df
+  }
+
   # Editable table UI with visibility checkboxes, term name editing, and search
   output$tools_2dgofcs_table_ui <- renderUI({
     res <- rv_2dgofcs$results
@@ -792,6 +872,13 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
 
     if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
       return(tags$div(class = "text-muted", "No terms to display."))
+    }
+
+    # Apply table filters
+    df <- apply_2dgofcs_table_filters(df)
+
+    if (nrow(df) == 0) {
+      return(tags$div(class = "text-muted", "No terms match the current filters."))
     }
 
     hidden_term_ids <- rv_2dgofcs$hidden_terms %||% character()
@@ -836,6 +923,10 @@ tools_2dgofcs_server <- function(input, output, session, app_state, rv_2dgofcs, 
       df <- rend$tables[[1]]
     }
     if (is.null(df) || !is.data.frame(df)) return()
+
+    # Apply table filters
+    df <- apply_2dgofcs_table_filters(df)
+    if (nrow(df) == 0) return()
 
     # Determine term_id column
     term_id_col <- if ("term_id" %in% names(df)) "term_id" else NULL

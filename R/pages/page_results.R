@@ -10,6 +10,7 @@
 .has_colourpicker <- requireNamespace("colourpicker", quietly = TRUE)
 .has_dt <- requireNamespace("DT", quietly = TRUE)
 .has_zip_pkg <- requireNamespace("zip", quietly = TRUE)
+.has_bslib <- requireNamespace("bslib", quietly = TRUE)
 
 # ---- Cross-platform zip helper -----------------------------------------------
 # Tries multiple methods to create a zip archive:
@@ -94,20 +95,24 @@ res_switch_input <- function(id, left_label, right_label, value = FALSE, help_ti
 }
 
 # ---- Collapsible section UI helper -----------------------------------------
+# Uses bslib::accordion for native Bootstrap accordion functionality
 res_collapse_section_ui <- function(id, title, badge_text = NULL, open = FALSE, ...) {
-  div(
-    class = paste("collapse-section", if (open) "open" else ""),
+  # Build title with optional badge
+
+  title_with_badge <- if (!is.null(badge_text)) {
+    tagList(title, tags$span(class = "ms-2 badge bg-secondary", badge_text))
+  } else {
+    title
+  }
+
+  bslib::accordion(
     id = id,
-    div(
-      class = "collapse-header",
-      div(
-        class = "collapse-title",
-        span(class = "collapse-icon", HTML("&#9654;")),
-        title
-      ),
-      if (!is.null(badge_text)) span(class = "collapse-badge", badge_text) else NULL
-    ),
-    div(class = "collapse-body", ...)
+    open = if (open) id else FALSE,
+    bslib::accordion_panel(
+      title = title_with_badge,
+      value = id,
+      ...
+    )
   )
 }
 
@@ -1230,25 +1235,6 @@ page_results_ui <- function() {
           }
         })();
       ")),
-      tags$script(HTML("
-        // Collapsible section toggle handler - preserves state across re-renders
-        $(document).on('click', '.collapse-header', function(e) {
-          e.stopPropagation();
-          var $section = $(this).closest('.collapse-section');
-
-          // Safety: ensure section element exists before operating
-          if (!$section || $section.length === 0) return;
-
-          $section.toggleClass('open');
-
-          // Report accordion state to Shiny for persistence
-          var sectionId = $section.attr('id');
-          var isOpen = $section.hasClass('open');
-          if (sectionId && typeof Shiny !== 'undefined' && Shiny.setInputValue) {
-            Shiny.setInputValue('res_accordion_state', {id: sectionId, open: isOpen}, {priority: 'event'});
-          }
-        });
-      ")),
       tags$style(HTML("
         .msterp-content.msterp-content-results {
           overflow: hidden !important;
@@ -1356,62 +1342,25 @@ page_results_ui <- function() {
 
         .res-panel-head { height: 10px; background: var(--primary, #c9414d); flex: 0 0 auto; }
 
-        /* === Collapsible Style Sections === */
-        .collapse-section {
-          border: 1px solid var(--border-light, #e8e4df);
-          border-radius: 8px;
+        /* === Style Accordion Tweaks (bslib accordion) === */
+        .res-style-controls .accordion {
+          --bs-accordion-border-color: var(--border-light, #e8e4df);
+          --bs-accordion-btn-padding-x: 12px;
+          --bs-accordion-btn-padding-y: 10px;
+          --bs-accordion-body-padding-x: 12px;
+          --bs-accordion-body-padding-y: 12px;
           margin-bottom: 8px;
-          overflow: hidden;
-          background: var(--bg-card, #ffffff);
         }
-        .collapse-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 10px 12px;
-          background: var(--bg-muted, #f5f3f0);
-          cursor: pointer;
-          user-select: none;
-          transition: background var(--duration-fast, 150ms) ease;
-        }
-        .collapse-header:hover {
-          background: var(--bg-hover, #f0eeeb);
-        }
-        .collapse-title {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-weight: 700;
+        .res-style-controls .accordion-button {
+          font-weight: 600;
           font-size: 13px;
+          background: var(--bg-muted, #f5f3f0);
+        }
+        .res-style-controls .accordion-button:not(.collapsed) {
+          background: var(--bg-muted, #f5f3f0);
           color: var(--text-primary, #1a1a1a);
         }
-        .collapse-icon {
-          display: inline-block;
-          font-size: 10px;
-          color: var(--text-secondary, #5a5a5a);
-          transition: transform var(--duration-fast, 150ms) ease;
-        }
-        .collapse-section.open .collapse-icon {
-          transform: rotate(90deg);
-        }
-        .collapse-badge {
-          font-size: 11px;
-          font-weight: 600;
-          color: var(--text-muted, #8a8a8a);
-          background: var(--bg-card, #ffffff);
-          padding: 2px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--border-light, #e8e4df);
-        }
-        .collapse-body {
-          max-height: 0;
-          overflow: hidden;
-          transition: max-height var(--duration-normal, 250ms) ease, padding var(--duration-normal, 250ms) ease;
-          padding: 0 12px;
-        }
-        .collapse-section.open .collapse-body {
-          max-height: 2000px;  /* Generous limit to avoid content truncation */
-          overflow-y: auto;    /* Allow scrolling if content exceeds limit */
+        .res-style-controls .accordion-body {
           padding: 12px;
         }
 
@@ -2350,21 +2299,16 @@ page_results_server <- function(input, output, session) {
     preview_dpi = 150L,  # Preview-only DPI (publication export uses separate download/export settings)
     label_selected = list(id = NULL, plot_key = NULL, eng = NULL),
     hover_info_by_plot = list(),
-    switching_node = FALSE,  # FIX: Flag to prevent false dirty detection during node switch
-    accordion_state = list()  # Track open/closed state of style accordion sections
+    switching_node = FALSE  # FIX: Flag to prevent false dirty detection during node switch
   )
   style_rev <- reactiveVal(0L)
 
-  # ---- Accordion state persistence -------------------------------------------
-  observeEvent(input$res_accordion_state, {
-    state <- input$res_accordion_state
-    # Validate state structure before storing
-    if (is.list(state) &&
-        !is.null(state$id) && is.character(state$id) && nzchar(state$id) &&
-        !is.null(state$open) && is.logical(state$open)) {
-      rv$accordion_state[[state$id]] <- state$open
-    }
-  }, ignoreNULL = TRUE, ignoreInit = TRUE)
+  # ---- Pending state for deferred updates (interactive mode) ----------------
+
+  # These accumulate changes without triggering re-renders until committed
+  pending_volcano_labels <- reactiveVal(NULL)      # Pending gene label text: list(plot_key, text)
+  pending_label_positions <- reactiveVal(list())   # Pending position changes: list(plot_key -> label_id -> {x, y, x_range, y_range})
+  pending_term_labels <- reactiveVal(list())       # Pending term label edits: list(original_term -> new_value)
 
   # ---- DPI observer: sync input$res_preview_dpi -> rv$preview_dpi ------------
   observeEvent(input$res_preview_dpi, {
@@ -2389,6 +2333,11 @@ page_results_server <- function(input, output, session) {
   .selector_sync_guard <- reactiveVal(FALSE)
 
   observeEvent(input$res_plot_pick, {
+    # Commit pending changes when switching plots within the same node
+    if (res_has_pending_changes()) {
+      res_commit_pending_changes(trigger_source = "plot_switch")
+    }
+
     if (isTRUE(.selector_sync_guard())) return()
     plot_pick <- as.character(input$res_plot_pick %||% "")
     if (!nzchar(plot_pick)) return()
@@ -2400,7 +2349,7 @@ page_results_server <- function(input, output, session) {
     on.exit(.selector_sync_guard(FALSE), add = TRUE)
 
     updateSelectInput(session, "res_table_pick", selected = plot_pick)
-  }, ignoreInit = TRUE)
+  }, ignoreInit = TRUE, priority = 10)  # High priority to run before other handlers
 
   observeEvent(input$res_table_pick, {
     if (isTRUE(.selector_sync_guard())) return()
@@ -3388,7 +3337,7 @@ page_results_server <- function(input, output, session) {
     )
   }
 
-  res_update_plotly_labels <- function(plot_key, update_fn) {
+  res_update_plotly_labels <- function(plot_key, update_fn, defer = FALSE) {
     plot_key <- as.character(plot_key %||% "")
     if (!nzchar(plot_key) || !is.function(update_fn)) return(invisible(NULL))
 
@@ -3396,6 +3345,37 @@ page_results_server <- function(input, output, session) {
     key <- as.character(node_id %||% "")
     if (!nzchar(key)) return(invisible(NULL))
 
+    if (defer) {
+      # Store in pending state without triggering re-render
+      pending_pos <- pending_label_positions()
+
+      # Get current labels (committed + already pending)
+      cur_plotly <- rv$cache_plotly_by_node[[key]] %||% list()
+      cur_plotly$labels_by_plot <- cur_plotly$labels_by_plot %||% list()
+      cur_labels <- cur_plotly$labels_by_plot[[plot_key]] %||% list()
+
+      # Merge with existing pending for this plot
+      if (!is.null(pending_pos[[plot_key]])) {
+        for (label_id in names(pending_pos[[plot_key]])) {
+          cur_labels[[label_id]] <- pending_pos[[plot_key]][[label_id]]
+        }
+      }
+
+      # Apply update function
+      new_labels <- update_fn(cur_labels)
+      if (is.null(new_labels)) new_labels <- list()
+
+      # Store changes in pending state (only the modified entries)
+      pending_pos[[plot_key]] <- pending_pos[[plot_key]] %||% list()
+      for (label_id in names(new_labels)) {
+        pending_pos[[plot_key]][[label_id]] <- new_labels[[label_id]]
+      }
+
+      pending_label_positions(pending_pos)
+      return(invisible(new_labels))
+    }
+
+    # Original non-deferred behavior
     cur_plotly <- rv$cache_plotly_by_node[[key]] %||% list()
     cur_plotly$labels_by_plot <- cur_plotly$labels_by_plot %||% list()
     cur_labels <- cur_plotly$labels_by_plot[[plot_key]] %||% list()
@@ -3443,6 +3423,121 @@ page_results_server <- function(input, output, session) {
       cur_labels[[label_id]] <- lab
       cur_labels
     })
+  }
+
+  # ---- Pending state helper functions for deferred updates ------------------
+
+
+  # Check if there are any pending changes for the current node
+  res_has_pending_changes <- function() {
+    has_labels <- !is.null(pending_volcano_labels())
+    has_positions <- length(pending_label_positions()) > 0
+    has_term_edits <- length(pending_term_labels()) > 0
+    has_labels || has_positions || has_term_edits
+  }
+
+  # Clear pending changes without committing (e.g., on data reload)
+  res_discard_pending_changes <- function() {
+    pending_volcano_labels(NULL)
+    pending_label_positions(list())
+    pending_term_labels(list())
+  }
+
+  # Commit all pending changes to main cache and trigger single re-render
+  res_commit_pending_changes <- function(trigger_source = "unknown") {
+    node_id <- rv$active_node_id
+    key <- as.character(node_id %||% "")
+    if (!nzchar(key)) return(invisible(FALSE))
+
+    committed <- FALSE
+    nd <- active_node_dir()
+
+    # 1. Commit pending volcano labels (if any)
+    pending_labels <- isolate(pending_volcano_labels())
+    if (!is.null(pending_labels)) {
+      plot_key <- pending_labels$plot_key
+      new_text <- pending_labels$text
+
+      eff <- isolate(active_effective_state())
+      label_map_json <- eff$style$label_genes_map %||% "{}"
+      label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+      label_map[[plot_key]] <- new_text
+      new_json <- jsonlite::toJSON(label_map, auto_unbox = TRUE)
+
+      cur_style <- rv$cache_style_by_node[[key]] %||% list()
+      cur_style$label_genes_map <- as.character(new_json)
+      rv$cache_style_by_node[[key]] <- cur_style
+
+      if (!is.null(nd)) {
+        .commit_style_debounced(node_dir = nd, payload = list(style = cur_style))
+      }
+
+      pending_volcano_labels(NULL)
+      committed <- TRUE
+    }
+
+    # 2. Commit pending label positions (if any)
+    pending_pos <- isolate(pending_label_positions())
+    if (length(pending_pos) > 0) {
+      cur_plotly <- rv$cache_plotly_by_node[[key]] %||% list()
+      cur_plotly$labels_by_plot <- cur_plotly$labels_by_plot %||% list()
+
+      for (pk in names(pending_pos)) {
+        cur_labels <- cur_plotly$labels_by_plot[[pk]] %||% list()
+        for (label_id in names(pending_pos[[pk]])) {
+          pos <- pending_pos[[pk]][[label_id]]
+          if (is.null(cur_labels[[label_id]])) cur_labels[[label_id]] <- list()
+          cur_labels[[label_id]]$x <- pos$x
+          cur_labels[[label_id]]$y <- pos$y
+          cur_labels[[label_id]]$x_range <- pos$x_range
+          cur_labels[[label_id]]$y_range <- pos$y_range
+        }
+        cur_plotly$labels_by_plot[[pk]] <- cur_labels
+      }
+
+      rv$cache_plotly_by_node[[key]] <- cur_plotly
+
+      if (!is.null(nd)) {
+        .commit_style_debounced(node_dir = nd, payload = list(plotly = cur_plotly))
+      }
+
+      pending_label_positions(list())
+      committed <- TRUE
+    }
+
+    # 3. Commit pending term labels (if any)
+    pending_terms <- isolate(pending_term_labels())
+    if (length(pending_terms) > 0) {
+      vis <- rv$cache_vis_by_node[[key]] %||% list()
+      term_labels <- vis$term_labels %||% list()
+
+      for (original_term in names(pending_terms)) {
+        new_value <- pending_terms[[original_term]]
+        if (nzchar(new_value) && new_value != original_term) {
+          term_labels[[original_term]] <- new_value
+        } else {
+          term_labels[[original_term]] <- NULL
+        }
+      }
+
+      vis$term_labels <- term_labels
+      rv$cache_vis_by_node[[key]] <- vis
+
+      if (!is.null(nd)) {
+        .commit_style_debounced(node_dir = nd, payload = list(visibility = vis))
+      }
+
+      pending_term_labels(list())
+      committed <- TRUE
+    }
+
+    if (committed) {
+      rv$has_unsaved_changes <- TRUE
+      rv$save_status <- "dirty"
+      style_rev(isolate(style_rev()) + 1L)
+    }
+
+    invisible(committed)
   }
 
   res_add_volcano_label <- function(plot_key, gene_id) {
@@ -3915,6 +4010,10 @@ page_results_server <- function(input, output, session) {
 
   # Observer for Overview button (always present)
   observeEvent(input$res_nav_overview, {
+    # Commit pending changes before switching nodes
+    if (res_has_pending_changes()) {
+      res_commit_pending_changes(trigger_source = "node_switch")
+    }
     rv$switching_node <- TRUE  # FIX: Set flag before node switch
     rv$active_node_id <- "overview"
   }, ignoreInit = TRUE)
@@ -3944,6 +4043,10 @@ page_results_server <- function(input, output, session) {
           node_id <- nid
           btn_id <- paste0("res_nav_", gsub("[^A-Za-z0-9_]", "_", node_id))
           rv$nav_obs[[node_id]] <- observeEvent(input[[btn_id]], {
+            # Commit pending changes before switching nodes
+            if (res_has_pending_changes()) {
+              res_commit_pending_changes(trigger_source = "node_switch")
+            }
             rv$switching_node <- TRUE  # FIX: Set flag before node switch
             rv$active_node_id <- node_id
           }, ignoreInit = TRUE)
@@ -4147,18 +4250,14 @@ page_results_server <- function(input, output, session) {
         })
       }))
 
-      # Determine open state: use persisted state if available, else default
-      # Use isolate() to prevent accordion state changes from triggering re-render
-      section_id <- paste0("style_section_", section_name)
-      persisted_open <- isolate(rv$accordion_state[[section_id]])
-      is_open <- if (!is.null(persisted_open)) persisted_open else isTRUE(section_def$open)
-
       # Create collapsible section with field count badge
+      # bslib::accordion handles open/close state natively
+      section_id <- paste0("style_section_", section_name)
       res_collapse_section_ui(
         id = section_id,
         title = section_def$title,
         badge_text = as.character(length(fields_in_section)),
-        open = is_open,
+        open = isTRUE(section_def$open),
         field_uis
       )
     }))
@@ -4181,10 +4280,27 @@ page_results_server <- function(input, output, session) {
           style = "margin-top: 8px; padding-top: 8px; border-top: 1px solid #eee;",
           textAreaInput(
             "res_volcano_label_genes",
-            label = paste0("Gene labels (", current_plot, ")"),
+            label = tagList(
+              paste0("Gene labels (", current_plot, ")"),
+              uiOutput("res_volcano_labels_pending_badge", inline = TRUE)
+            ),
             value = as.character(current_labels),
             rows = 4,
             placeholder = "Enter gene symbols, one per line"
+          ),
+          div(
+            style = "margin-top: 6px; display: flex; gap: 8px; align-items: center;",
+            actionButton(
+              "res_volcano_labels_apply",
+              "Apply Labels",
+              class = "btn-sm btn-outline-primary",
+              style = "flex-shrink: 0;"
+            ),
+            tags$small(
+              class = "text-muted",
+              style = "flex: 1;",
+              "Positions of existing labels are preserved"
+            )
           )
         )
       }
@@ -4211,6 +4327,78 @@ page_results_server <- function(input, output, session) {
       )
     }
 
+    # Build table filter controls for GO engines (goora, 1dgofcs, 2dgofcs)
+    table_filter_ui <- NULL
+    if (eng_lower %in% c("goora", "1dgofcs", "2dgofcs")) {
+      filter_fields <- tagList(
+        # Fold enrichment filter (GO-ORA only)
+        if (eng_lower == "goora") {
+          numericInput(
+            "res_filter_fold_enrichment_min",
+            "Min fold enrichment",
+            value = NA,
+            min = 0,
+            step = 0.1
+          )
+        },
+        # Score X filter (2D GO-FCS only)
+        if (eng_lower == "2dgofcs") {
+          numericInput(
+            "res_filter_score_x_min",
+            "Min score X",
+            value = NA,
+            step = 0.1
+          )
+        },
+        # Score Y filter (2D GO-FCS only)
+        if (eng_lower == "2dgofcs") {
+          numericInput(
+            "res_filter_score_y_min",
+            "Min score Y",
+            value = NA,
+            step = 0.1
+          )
+        },
+        # Score filter (1D GO-FCS only)
+        if (eng_lower == "1dgofcs") {
+          numericInput(
+            "res_filter_score_min",
+            "Min score",
+            value = NA,
+            step = 0.1
+          )
+        },
+        # Common filters for all GO engines
+        numericInput(
+          "res_filter_n_genes_min",
+          "Min # genes",
+          value = NA,
+          min = 1,
+          step = 1
+        ),
+        numericInput(
+          "res_filter_fdr_max",
+          "Max FDR",
+          value = NA,
+          min = 0,
+          max = 1,
+          step = 0.001
+        ),
+        actionButton(
+          "res_filter_clear",
+          "Clear Filters",
+          class = "btn btn-default btn-sm",
+          style = "margin-top: 8px;"
+        )
+      )
+      table_filter_ui <- res_collapse_section_ui(
+        id = "style_section_table_filters",
+        title = "Table Filters",
+        open = FALSE,
+        filter_fields
+      )
+    }
+
     tagList(
       h4("Style"),
       view_mode_ui,
@@ -4219,7 +4407,8 @@ page_results_server <- function(input, output, session) {
       mode_controls,
       selected_group_ui,  # Group selector at top for hor_dis/vert_dis (conditional on within_groups mode)
       selectors_ui,       # Selector fields (always visible, not in accordions)
-      accordions_ui       # Accordion panels for grouped fields
+      accordions_ui,      # Accordion panels for grouped fields
+      table_filter_ui     # Table filters for GO engines
       # Apply button and reset override removed - updates happen automatically
     )
   })
@@ -4335,7 +4524,7 @@ page_results_server <- function(input, output, session) {
     if (!is.null(rv$exdir) && dir.exists(rv$exdir)) {
       try(unlink(rv$exdir, recursive = TRUE, force = TRUE), silent = TRUE)
     }
-    
+
     rv$exdir <- NULL
     rv$run_root <- NULL
     rv$manifest <- NULL
@@ -4346,8 +4535,32 @@ page_results_server <- function(input, output, session) {
     rv$loaded <- FALSE
   }, ignoreInit = TRUE)
 
-  # Sync volcano per-plot gene labels to label_genes_map
-  # FIX: Use debounced input to avoid re-render on each keystroke
+  # ---- Commit triggers for deferred pending changes -------------------------
+
+  # Track previous view_mode to detect transitions from interactive to export_preview
+  .prev_view_mode <- reactiveVal(NULL)
+
+  # Commit pending changes when switching from interactive to export_preview mode
+  observe({
+    st <- active_effective_state()
+    if (is.null(st)) return()
+    current_mode <- tolower(as.character(st$style$view_mode %||% "export_preview"))
+    prev_mode <- .prev_view_mode()
+
+    # Only commit when switching TO export_preview (not initial load)
+    if (!is.null(prev_mode) && prev_mode == "interactive" && current_mode == "export_preview") {
+      if (res_has_pending_changes()) {
+        res_commit_pending_changes(trigger_source = "mode_switch")
+        showNotification("Pending changes applied for export preview.", type = "message")
+      }
+    }
+
+    .prev_view_mode(current_mode)
+  })
+
+  # Sync volcano per-plot gene labels to pending state (deferred update)
+  # FIX: Store in pending state instead of triggering immediate re-render
+  # User must click "Apply Labels" button to commit changes
   observeEvent(volcano_label_genes_debounced(), {
     req(rv$loaded, rv$active_node_id)
     eng <- tolower(active_engine_id() %||% "")
@@ -4357,19 +4570,66 @@ page_results_server <- function(input, output, session) {
     current_plot <- input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "volcano_plot")
     new_labels <- volcano_label_genes_debounced() %||% ""
 
-    # Get current label map
+    # Get current committed labels to check if there's actually a change
     eff <- isolate(active_effective_state())
     label_map_json <- eff$style$label_genes_map %||% "{}"
     label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+    current_committed <- label_map[[current_plot]] %||% ""
 
-    # Update the map with new labels for this plot
-    label_map[[current_plot]] <- new_labels
+    # Only mark as pending if different from committed value
+    if (!identical(new_labels, current_committed)) {
+      pending_volcano_labels(list(
+        plot_key = current_plot,
+        text = new_labels
+      ))
+    } else {
+      # Clear pending if user reverted to committed value
+      pending_volcano_labels(NULL)
+    }
+  }, ignoreInit = TRUE)
 
-    # Encode back to JSON and store in cache
+  # Pending badge for volcano labels
+  output$res_volcano_labels_pending_badge <- renderUI({
+    pending <- pending_volcano_labels()
+    if (is.null(pending)) return(NULL)
+
+    tags$span(
+      class = "badge bg-warning text-dark ms-1",
+      style = "font-size: 10px; vertical-align: middle;",
+      "pending"
+    )
+  })
+
+  # Apply button for volcano labels - commits pending labels while preserving positions
+  observeEvent(input$res_volcano_labels_apply, {
+    req(rv$loaded, rv$active_node_id)
+    eng <- tolower(active_engine_id() %||% "")
+    if (eng != "volcano") return()
+
+    pending <- pending_volcano_labels()
+    if (is.null(pending)) {
+      showNotification("No pending label changes to apply.", type = "message")
+      return()
+    }
+
+    plot_key <- pending$plot_key
+    new_text <- pending$text
+
+    # Parse the new labels for count
+    new_labels <- strsplit(new_text, "\\s*[,\n]+\\s*")[[1]]
+    new_labels <- trimws(new_labels)
+    new_labels <- new_labels[nzchar(new_labels)]
+
+    # Commit the label text change (positions are keyed by gene name, so preserved automatically)
+    node_id <- rv$active_node_id
+    key <- as.character(node_id %||% "")
+
+    eff <- isolate(active_effective_state())
+    label_map_json <- eff$style$label_genes_map %||% "{}"
+    label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+    label_map[[plot_key]] <- new_text
     new_json <- jsonlite::toJSON(label_map, auto_unbox = TRUE)
 
-    node_id <- rv$active_node_id
-    key <- as.character(node_id)
     cur_style <- rv$cache_style_by_node[[key]] %||% list()
     cur_style$label_genes_map <- as.character(new_json)
     rv$cache_style_by_node[[key]] <- cur_style
@@ -4379,11 +4639,16 @@ page_results_server <- function(input, output, session) {
       .commit_style_debounced(node_dir = nd, payload = list(style = cur_style))
     }
 
+    # Clear pending state and trigger re-render
+    pending_volcano_labels(NULL)
     rv$has_unsaved_changes <- TRUE
     rv$save_status <- "dirty"
-
-    # Trigger re-render
     style_rev(isolate(style_rev()) + 1L)
+
+    showNotification(
+      paste0("Applied ", length(new_labels), " label(s). Existing positions preserved."),
+      type = "message"
+    )
   }, ignoreInit = TRUE)
 
   observeEvent(list(rv$active_node_id, input$res_plot_pick, input$res_enrichment_tabs), {
@@ -4393,6 +4658,33 @@ page_results_server <- function(input, output, session) {
   observeEvent(list(rv$active_node_id, input$res_plot_pick, input$res_enrichment_tabs, style_rev()), {
     rv$hover_info_by_plot <- list()
   }, ignoreInit = TRUE)
+
+  # Pending changes indicator for interactive mode
+  output$res_pending_indicator <- renderUI({
+    pending_pos <- pending_label_positions()
+    pending_terms <- pending_term_labels()
+
+    if (length(pending_pos) == 0 && length(pending_terms) == 0) return(NULL)
+
+    # Count pending changes
+    pos_count <- sum(vapply(pending_pos, length, integer(1)))
+    term_count <- length(pending_terms)
+
+    parts <- c()
+    if (pos_count > 0) parts <- c(parts, paste0(pos_count, " position(s)"))
+    if (term_count > 0) parts <- c(parts, paste0(term_count, " label(s)"))
+
+    div(
+      style = "position: absolute; top: 8px; right: 8px; z-index: 100;
+               background: rgba(255, 193, 7, 0.95); color: #000;
+               padding: 6px 10px; border-radius: 4px; font-size: 11px;
+               box-shadow: 0 1px 3px rgba(0,0,0,0.2);",
+      icon("clock"),
+      tags$span(style = "margin-left: 4px;", paste("Pending:", paste(parts, collapse = ", "))),
+      tags$br(),
+      tags$small("Switch mode or download to apply")
+    )
+  })
 
   observeEvent(input$res_label_plot_click, {
     eng <- tolower(active_engine_id() %||% "")
@@ -5493,8 +5785,10 @@ page_results_server <- function(input, output, session) {
       return(
         div(
           class = "res-plot-interact res-plotly-wrap",
+          style = "position: relative;",
           tabindex = "0",
-          plotly::plotlyOutput("res_plotly_interactive", height = "500px", width = "100%")
+          plotly::plotlyOutput("res_plotly_interactive", height = "500px", width = "100%"),
+          uiOutput("res_pending_indicator")
         )
       )
     }
@@ -5655,6 +5949,7 @@ page_results_server <- function(input, output, session) {
 
   # ============================================================
   # Plotly annotation relayout handler - capture label drag events
+  # FIX: Use deferred updates in interactive mode to avoid re-render lag
   # ============================================================
   observeEvent(event_data("plotly_relayout", source = "volcano_plotly"), {
     relayout_data <- event_data("plotly_relayout", source = "volcano_plotly")
@@ -5667,6 +5962,9 @@ page_results_server <- function(input, output, session) {
     st <- active_effective_state()
     style <- st$style %||% list()
     plotly_state <- st$plotly %||% list()
+
+    # Check if in interactive mode - use deferred updates to avoid re-render lag
+    is_interactive <- isTRUE(res_is_interactive_view(style))
 
     # Get current label list - must match the order annotations were created in tb_volcano_plotly
     # Annotations are created in df row order (filtered by labs), not in labs order
@@ -5705,6 +6003,7 @@ page_results_server <- function(input, output, session) {
             gene <- labs[idx]
 
             # Update plotly state with new position (normalized from data coords to [0,1])
+            # Use deferred mode in interactive view to avoid lag
             res_update_plotly_labels(plot_key, function(cur_labels) {
               if (is.null(cur_labels[[gene]])) cur_labels[[gene]] <- list()
 
@@ -5721,14 +6020,15 @@ page_results_server <- function(input, output, session) {
               cur_labels[[gene]]$x_range <- state$xlim
               cur_labels[[gene]]$y_range <- state$ylim
               cur_labels
-            })
+            }, defer = is_interactive)
             updated <- TRUE
           }
         }
       }
     }
 
-    if (updated) {
+    # Only trigger immediate re-render if NOT in deferred mode
+    if (updated && !is_interactive) {
       rv$has_unsaved_changes <- TRUE
       rv$save_status <- "dirty"
       style_rev(isolate(style_rev()) + 1L)
@@ -5761,6 +6061,7 @@ page_results_server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   # Shared handler for 2D GOFCS relayout events (annotation dragging)
+  # FIX: Use deferred updates in interactive mode to avoid re-render lag
   res_handle_2dgofcs_relayout <- function(relayout_data, plot_key) {
     eng <- isolate(tolower(active_engine_id() %||% ""))
     if (!identical(eng, "2dgofcs")) return()
@@ -5768,6 +6069,9 @@ page_results_server <- function(input, output, session) {
     st <- isolate(active_effective_state())
     style <- st$style %||% list()
     if (!isTRUE(res_is_interactive_view(style))) return()
+
+    # Always use deferred updates in interactive mode for 2dgofcs
+    is_interactive <- TRUE
 
     res <- isolate(active_results())
     if (is.null(res)) return()
@@ -5796,6 +6100,7 @@ page_results_server <- function(input, output, session) {
               term_row <- df_lab[idx, , drop = FALSE]
               term_id <- as.character(term_row$term_id[1] %||% term_row$term_original[1] %||% term_row$term[1])
 
+              # Use deferred mode in interactive view to avoid lag
               res_update_plotly_labels(plot_key, function(cur_labels) {
                 if (is.null(cur_labels[[term_id]])) cur_labels[[term_id]] <- list()
 
@@ -5810,7 +6115,7 @@ page_results_server <- function(input, output, session) {
                 cur_labels[[term_id]]$x_range <- state$xlim
                 cur_labels[[term_id]]$y_range <- state$ylim
                 cur_labels
-              })
+              }, defer = is_interactive)
               updated <- TRUE
             }
           }
@@ -5818,11 +6123,7 @@ page_results_server <- function(input, output, session) {
       }
     }
 
-    if (updated) {
-      rv$has_unsaved_changes <- TRUE
-      rv$save_status <- "dirty"
-      style_rev(isolate(style_rev()) + 1L)
-    }
+    # No immediate re-render in deferred mode - changes applied on mode switch/download
   }
 
   output$res_hover_ui <- renderUI({
@@ -6642,6 +6943,7 @@ page_results_server <- function(input, output, session) {
     }, ignoreInit = TRUE)
 
     # Term label edit handler for GO enrichment tables (base table)
+    # FIX: Use deferred updates to avoid re-render lag on each keystroke
     observeEvent(input$res_table_cell_edit, {
       info <- input$res_table_cell_edit
       if (is.null(info)) return()
@@ -6680,34 +6982,20 @@ page_results_server <- function(input, output, session) {
       # Get original term name from the .original_term column (preserves original even after label edits)
       original_term <- tbl_df_display$.original_term[row_idx]
 
-      # Update term_labels in visibility cache and persist to disk
-      key <- as.character(rv$active_node_id)
-      vis <- rv$cache_vis_by_node[[key]] %||% list()
-      term_labels <- vis$term_labels %||% list()
+      # Store in pending state instead of immediate commit (deferred update)
+      pending_terms <- pending_term_labels()
+      pending_terms[[original_term]] <- new_value
+      pending_term_labels(pending_terms)
 
-      if (nzchar(new_value) && new_value != original_term) {
-        term_labels[[original_term]] <- new_value
-      } else {
-        # If set back to original or empty, remove the override
-        term_labels[[original_term]] <- NULL
-      }
-      vis$term_labels <- term_labels
-      rv$cache_vis_by_node[[key]] <- vis
-
-      # Persist to render_state.json
-      nd <- active_node_dir()
-      if (!is.null(nd)) {
-        .commit_style_debounced(node_dir = nd, payload = list(visibility = vis))
-      }
-
-      # Mark as changed and trigger re-render
-      rv$has_unsaved_changes <- TRUE; rv$save_status <- "dirty"
-      style_rev(isolate(style_rev()) + 1L)
-
-      showNotification("Term label updated", type = "message")
+      showNotification(
+        "Term label updated (pending). Switch to export preview or download to apply.",
+        type = "message",
+        duration = 3
+      )
     }, ignoreInit = TRUE)
 
     # Term label edit handlers for tab-based GO enrichment tables (BP/MF/CC)
+    # FIX: Use deferred updates to avoid re-render lag on each keystroke
     lapply(c("bp", "mf", "cc"), function(t_lower) {
       observeEvent(input[[paste0("res_table_", t_lower, "_cell_edit")]], {
         info <- input[[paste0("res_table_", t_lower, "_cell_edit")]]
@@ -6749,30 +7037,16 @@ page_results_server <- function(input, output, session) {
         # Get original term name from the .original_term column (preserves original even after label edits)
         original_term <- tbl_df_display$.original_term[row_idx]
 
-        # Update term_labels in visibility cache and persist to disk
-        key <- as.character(rv$active_node_id)
-        vis <- rv$cache_vis_by_node[[key]] %||% list()
-        term_labels <- vis$term_labels %||% list()
+        # Store in pending state instead of immediate commit (deferred update)
+        pending_terms <- pending_term_labels()
+        pending_terms[[original_term]] <- new_value
+        pending_term_labels(pending_terms)
 
-        if (nzchar(new_value) && new_value != original_term) {
-          term_labels[[original_term]] <- new_value
-        } else {
-          term_labels[[original_term]] <- NULL
-        }
-        vis$term_labels <- term_labels
-        rv$cache_vis_by_node[[key]] <- vis
-
-        # Persist to render_state.json
-        nd <- active_node_dir()
-        if (!is.null(nd)) {
-          .commit_style_debounced(node_dir = nd, payload = list(visibility = vis))
-        }
-
-        # Mark as changed and trigger re-render
-        rv$has_unsaved_changes <- TRUE; rv$save_status <- "dirty"
-        style_rev(isolate(style_rev()) + 1L)
-
-        showNotification("Term label updated", type = "message")
+        showNotification(
+          "Term label updated (pending). Switch to export preview or download to apply.",
+          type = "message",
+          duration = 3
+        )
       }, ignoreInit = TRUE)
     })
 
@@ -6814,6 +7088,71 @@ page_results_server <- function(input, output, session) {
       showNotification(paste("Category", action, ":", bin_name), type = "message")
     }, ignoreInit = TRUE)
 
+  # Clear filter button handler for GO engines
+  observeEvent(input$res_filter_clear, {
+    updateNumericInput(session, "res_filter_fold_enrichment_min", value = NA)
+    updateNumericInput(session, "res_filter_score_min", value = NA)
+    updateNumericInput(session, "res_filter_score_x_min", value = NA)
+    updateNumericInput(session, "res_filter_score_y_min", value = NA)
+    updateNumericInput(session, "res_filter_n_genes_min", value = NA)
+    updateNumericInput(session, "res_filter_fdr_max", value = NA)
+  }, ignoreInit = TRUE)
+
+  # Helper function to apply table filters for GO engines
+  res_apply_go_table_filters <- function(df, eng) {
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
+    eng <- tolower(eng %||% "")
+
+    # Filter by fold_enrichment min (GO-ORA only)
+    if (eng == "goora") {
+      fe_min <- input$res_filter_fold_enrichment_min
+      if (!is.null(fe_min) && is.finite(fe_min) && "fold_enrichment" %in% names(df)) {
+        df <- df[!is.na(df$fold_enrichment) & df$fold_enrichment >= fe_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by score min (1D GO-FCS only)
+    if (eng == "1dgofcs") {
+      score_min <- input$res_filter_score_min
+      if (!is.null(score_min) && is.finite(score_min) && "score" %in% names(df)) {
+        df <- df[!is.na(df$score) & df$score >= score_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by score_x min (2D GO-FCS only)
+    if (eng == "2dgofcs") {
+      score_x_min <- input$res_filter_score_x_min
+      if (!is.null(score_x_min) && is.finite(score_x_min) && "score_x" %in% names(df)) {
+        df <- df[!is.na(df$score_x) & df$score_x >= score_x_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by score_y min (2D GO-FCS only)
+    if (eng == "2dgofcs") {
+      score_y_min <- input$res_filter_score_y_min
+      if (!is.null(score_y_min) && is.finite(score_y_min) && "score_y" %in% names(df)) {
+        df <- df[!is.na(df$score_y) & df$score_y >= score_y_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by n_genes min (all GO engines)
+    n_min <- input$res_filter_n_genes_min
+    if (!is.null(n_min) && is.finite(n_min)) {
+      n_col <- intersect(c("n_genes", "n", "count", "Count"), names(df))[1]
+      if (!is.na(n_col)) {
+        df <- df[!is.na(df[[n_col]]) & df[[n_col]] >= n_min, , drop = FALSE]
+      }
+    }
+
+    # Filter by FDR max (all GO engines)
+    fdr_max <- input$res_filter_fdr_max
+    if (!is.null(fdr_max) && is.finite(fdr_max) && "fdr" %in% names(df)) {
+      df <- df[!is.na(df$fdr) & df$fdr <= fdr_max, , drop = FALSE]
+    }
+
+    df
+  }
+
   if (.has_dt) {
     output$res_table <- DT::renderDataTable({
       rend <- active_rendered()
@@ -6824,7 +7163,7 @@ page_results_server <- function(input, output, session) {
       req(length(tbls) > 0)
 
       eng <- tolower(active_engine_id() %||% "")
-      
+
       which <- input$res_table_pick %||% input$res_plot_pick
       if (is.null(which) || !nzchar(which) || !(which %in% names(tbls))) which <- names(tbls)[[1]]
 
@@ -6832,6 +7171,11 @@ page_results_server <- function(input, output, session) {
       is_go_engine <- eng %in% c("goora", "1dgofcs", "2dgofcs")
 
       tbl_df <- as.data.frame(tbls[[which]])
+
+      # Apply table filters for GO engines
+      if (is_go_engine) {
+        tbl_df <- res_apply_go_table_filters(tbl_df, eng)
+      }
 
       # Add Show/Copy/Search columns for GO enrichment tables with visibility state
       term_col_check <- intersect(c("term", "term_name"), names(tbl_df))
@@ -6962,6 +7306,11 @@ page_results_server <- function(input, output, session) {
 
       tbl_df_base <- as.data.frame(tbls[[which]])
       is_go_engine <- eng %in% c("goora", "1dgofcs", "2dgofcs")
+
+      # Apply table filters for GO engines
+      if (is_go_engine) {
+        tbl_df_base <- res_apply_go_table_filters(tbl_df_base, eng)
+      }
 
       # NOTE: Numeric columns (fdr, score, fold_enrichment, etc.) are already formatted
       # by tb_render_go_tab() in terpbook.R using tb_format_fdr() and tb_format_sig().
@@ -7200,6 +7549,11 @@ page_results_server <- function(input, output, session) {
 
             tbl_df_tab <- as.data.frame(t_tables[[1]])
 
+            # Apply table filters for GO engines
+            if (is_go_engine) {
+              tbl_df_tab <- res_apply_go_table_filters(tbl_df_tab, eng)
+            }
+
             # Add Show/Copy/Search columns for GO enrichment tables with visibility state
             # Search button is excluded for 2dgofcs
             term_col_check_tab <- intersect(c("term", "term_name"), names(tbl_df_tab))
@@ -7322,6 +7676,11 @@ page_results_server <- function(input, output, session) {
 
             tbl_df_base_tab <- as.data.frame(t_tables[[1]])
 
+            # Apply table filters for GO engines
+            if (is_go_engine) {
+              tbl_df_base_tab <- res_apply_go_table_filters(tbl_df_base_tab, eng)
+            }
+
             # NOTE: Numeric columns (fdr, score, fold_enrichment, etc.) are already formatted
             # by tb_render_go_tab() in terpbook.R using tb_format_fdr() and tb_format_sig().
 
@@ -7345,6 +7704,14 @@ page_results_server <- function(input, output, session) {
 
           if (eng %in% c("1dgofcs", "goora", "2dgofcs")) {
             tbl_df_raw <- as.data.frame(t_tables[[1]])
+
+            # Apply table filters for GO engines
+            tbl_df_raw <- res_apply_go_table_filters(tbl_df_raw, eng)
+
+            if (nrow(tbl_df_raw) == 0) {
+              return(div(class = "text-muted", "No terms match the current filters."))
+            }
+
             if (!("term_id" %in% names(tbl_df_raw))) {
               return(div(class = "text-danger", "GO table is missing required column: term_id"))
             }
@@ -7684,6 +8051,11 @@ page_results_server <- function(input, output, session) {
       paste0(base, ".", fmt)
     },
     content = function(file) {
+      # Commit any pending changes before generating download
+      if (res_has_pending_changes()) {
+        res_commit_pending_changes(trigger_source = "download")
+      }
+
       rend <- active_rendered()
       if (inherits(rend, "error") || is.null(rend)) {
         stop("Render error; cannot download.")

@@ -211,41 +211,198 @@ page_new_run_ui <- function() {
         }
 
         .nr-actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+        /* Queue Mode Styles */
+        .nr-mode-toggle {
+          display: flex;
+          justify-content: center;
+          margin-bottom: 16px;
+        }
+        .nr-mode-toggle .btn-group-toggle .btn {
+          padding: 8px 20px;
+          font-weight: 600;
+        }
+        .nr-queue-entry {
+          margin-bottom: 16px;
+          padding-bottom: 16px;
+          border-bottom: 1px solid var(--md-border);
+        }
+        .nr-queue-list {
+          margin-top: 16px;
+        }
+        .nr-queue-item {
+          background: var(--md-card-bg);
+          border: 1px solid var(--md-card-border);
+          border-radius: 8px;
+          padding: 12px;
+          margin-bottom: 10px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .nr-queue-item.running {
+          border-color: #ffc107;
+          background: #fffdf5;
+        }
+        .nr-queue-item.done {
+          border-color: #1a8f3a;
+          background: #f5fff7;
+        }
+        .nr-queue-item.error {
+          border-color: #d11;
+          background: #fff5f5;
+        }
+        .nr-queue-item-num {
+          font-weight: 800;
+          font-size: 16px;
+          min-width: 28px;
+          text-align: center;
+          color: #555;
+        }
+        .nr-queue-item-info {
+          flex: 1;
+          min-width: 0;
+        }
+        .nr-queue-item-name {
+          font-weight: 700;
+          font-size: 14px;
+          margin-bottom: 4px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .nr-queue-item-files {
+          font-size: 11px;
+          color: #666;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .nr-queue-item-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 100px;
+        }
+        .nr-queue-item-progress {
+          flex: 0 0 80px;
+        }
+        .nr-queue-item-progress .nr-progress-bar {
+          height: 6px;
+        }
+        .nr-queue-item-actions {
+          display: flex;
+          gap: 6px;
+        }
+        .nr-queue-actions-bar {
+          display: flex;
+          gap: 10px;
+          margin-top: 16px;
+          padding-top: 16px;
+          border-top: 1px solid var(--md-border);
+          flex-wrap: wrap;
+        }
+        .nr-queue-overall {
+          margin-bottom: 12px;
+          padding: 12px;
+          background: #f8f9fa;
+          border-radius: 8px;
+        }
+        .nr-queue-overall-text {
+          font-weight: 700;
+          font-size: 14px;
+          margin-bottom: 8px;
+        }
+        .nr-queue-empty {
+          text-align: center;
+          padding: 40px 20px;
+          color: #888;
+          font-style: italic;
+        }
       "))
       ,
         tags$script(HTML("
         (function() {
+          // Track scroll state per log element by a unique key
+          var logScrollState = {};
+
           function initNrLogAutoScroll() {
-            var el = document.querySelector('.nr-log');
-            if (!el || el.dataset.nrAutoScrollInit === '1') return;
-            el.dataset.nrAutoScrollInit = '1';
+            var els = document.querySelectorAll('.nr-log');
+            els.forEach(function(el) {
+              if (el.dataset.nrAutoScrollInit === '1') return;
+              el.dataset.nrAutoScrollInit = '1';
 
-            var paused = false;
-            function isAtBottom() {
-              return (el.scrollHeight - el.scrollTop - el.clientHeight) < 8;
-            }
-            function updatePaused() {
-              paused = !isAtBottom();
-            }
+              // Use a unique key based on parent structure
+              var key = el.closest('.nr-running-panel') ? 'running' : 'gate';
+              if (!logScrollState[key]) {
+                logScrollState[key] = { paused: false };
+              }
+              var state = logScrollState[key];
 
-            el.addEventListener('scroll', function() {
-              updatePaused();
-            }, { passive: true });
+              function isAtBottom() {
+                return (el.scrollHeight - el.scrollTop - el.clientHeight) < 20;
+              }
+              function updatePaused() {
+                state.paused = !isAtBottom();
+              }
 
-            updatePaused();
+              el.addEventListener('scroll', function() {
+                updatePaused();
+              }, { passive: true });
 
-            var obs = new MutationObserver(function() {
-              if (!paused) {
+              // Restore scroll position or scroll to bottom
+              if (state.scrollTop !== undefined && state.paused) {
+                el.scrollTop = state.scrollTop;
+              } else {
                 el.scrollTop = el.scrollHeight;
               }
-            });
 
-            obs.observe(el, { childList: true, subtree: true, characterData: true });
+              var obs = new MutationObserver(function() {
+                if (!state.paused) {
+                  el.scrollTop = el.scrollHeight;
+                }
+                // Save scroll position
+                state.scrollTop = el.scrollTop;
+              });
+
+              obs.observe(el, { childList: true, subtree: true, characterData: true });
+
+              // Also save scroll position periodically
+              setInterval(function() {
+                if (document.contains(el)) {
+                  state.scrollTop = el.scrollTop;
+                }
+              }, 200);
+            });
           }
 
           document.addEventListener('DOMContentLoaded', initNrLogAutoScroll);
           document.addEventListener('shiny:connected', initNrLogAutoScroll);
-          setInterval(initNrLogAutoScroll, 1000);
+          // Check more frequently for new log elements
+          setInterval(initNrLogAutoScroll, 300);
+
+          // Custom handler to update log content without replacing element
+          Shiny.addCustomMessageHandler('nr_update_log', function(msg) {
+            var el = document.getElementById(msg.id);
+            if (!el) return;
+
+            var logEl = el.querySelector('.nr-log') || el.closest('.nr-log') || el;
+            if (!logEl) return;
+
+            // Check if user has scrolled up (paused auto-scroll)
+            var wasAtBottom = (logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight) < 20;
+            var oldScrollTop = logEl.scrollTop;
+
+            // Update content
+            logEl.innerHTML = msg.html;
+
+            // Restore scroll position or scroll to bottom
+            if (wasAtBottom) {
+              logEl.scrollTop = logEl.scrollHeight;
+            } else {
+              logEl.scrollTop = oldScrollTop;
+            }
+          });
         })();
       "))
       ),
@@ -256,6 +413,36 @@ page_new_run_ui <- function() {
       )
     )
   )
+}
+
+# Helper to persist queue item files to durable temp location
+nr_persist_queue_item_files <- function(item) {
+  queue_files_dir <- file.path(tempdir(), "msterp_queue_files")
+  dir.create(queue_files_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Persist formatted data
+  if (!is.null(item$formatted$path) && file.exists(item$formatted$path)) {
+    new_path <- file.path(queue_files_dir, paste0(item$id, "_formatted.xlsx"))
+    file.copy(item$formatted$path, new_path, overwrite = TRUE)
+    item$formatted$path <- new_path
+  }
+
+  # Persist terpflow
+  if (!is.null(item$terpflow$path) && file.exists(item$terpflow$path)) {
+    new_path <- file.path(queue_files_dir, paste0(item$id, "_pipeline.terpflow"))
+    file.copy(item$terpflow$path, new_path, overwrite = TRUE)
+    item$terpflow$path <- new_path
+  }
+
+  # Persist terpbase (only if uploaded, not default)
+  if (identical(item$terpbase$mode, "upload") &&
+      !is.null(item$terpbase$path) && file.exists(item$terpbase$path)) {
+    new_path <- file.path(queue_files_dir, paste0(item$id, "_terpbase.terpbase"))
+    file.copy(item$terpbase$path, new_path, overwrite = TRUE)
+    item$terpbase$path <- new_path
+  }
+
+  item
 }
 
 page_new_run_server <- function(input, output, session, app_state = NULL, state = NULL) {
@@ -275,7 +462,14 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
     # Store original file names for display in log
     formatted_filename = NULL,
     terpflow_filename = NULL,
-    terpbase_filename = NULL
+    terpbase_filename = NULL,
+    # Queue mode state
+    queue_items = list(),
+    queue_running = FALSE,
+    queue_current_index = 0,
+    queue_bg_process = NULL,
+    queue_results_dir = NULL,
+    queue_start_time = NULL
   )
 
   set_busy <- function(active, message = "", percent = NULL) {
@@ -376,60 +570,100 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
   output$nr_light_terpbase <- renderUI(light_ui(v_terpbase(), "Terpbase"))
   output$nr_light_formatted <- renderUI(light_ui(v_formatted(), "Formatted"))
   output$nr_light_terpflow <- renderUI(light_ui(v_terpflow(), "Pipeline"))
+  # Shared input form UI (used in both single and queue modes)
+  nr_input_form_ui <- function(for_queue = FALSE) {
+    tagList(
+      div(class = "nr-section",
+          strong("1) Terpbase"),
+          radioButtons(
+            "nr_terpbase_mode",
+            label = NULL,
+            choices = c("Use default" = "default", "Upload" = "upload"),
+            selected = "default",
+            inline = TRUE
+          ),
+          conditionalPanel(
+            "input.nr_terpbase_mode == 'default'",
+            textInput(
+              "nr_terpbase_default_path",
+              label = NULL,
+              value = "terpbase/Jan2026UniprotHuman.terpbase"
+            )
+          ),
+          conditionalPanel(
+            "input.nr_terpbase_mode == 'upload'",
+            fileInput("nr_terpbase_upload", label = NULL, accept = c(".terpbase", ".rds"))
+          ),
+          uiOutput("nr_light_terpbase")
+      ),
+
+      div(class = "nr-section",
+          strong("2) Formatted data (.xlsx)"),
+          fileInput("nr_formatted_upload", label = NULL, accept = c(".xlsx", ".xls")),
+          uiOutput("nr_light_formatted")
+      ),
+
+      div(class = "nr-section",
+          strong("3) Pipeline (.terpflow)"),
+          fileInput("nr_terpflow_upload", label = NULL, accept = c(".terpflow", ".rds")),
+          uiOutput("nr_light_terpflow")
+      ),
+
+      div(class = "nr-section",
+          strong("4) Run Name"),
+          textInput("nr_run_name", label = NULL, placeholder = "e.g., my_analysis", width = "70%")
+      )
+    )
+  }
+
   nr_gate_panel_ui <- function() {
+    mode <- input$nr_run_mode %||% "single"
+
     div(
       class = "msterp-gate",
       div(
         class = "msterp-gate-card",
         div(
           class = "msterp-gate-body",
-          div(class = "msterp-gate-title", "New Run"),
-          div(class = "nr-section",
-              strong("1) Terpbase"),
+          # Mode toggle
+          div(class = "nr-mode-toggle",
               radioButtons(
-                "nr_terpbase_mode",
+                "nr_run_mode",
                 label = NULL,
-                choices = c("Use default" = "default", "Upload" = "upload"),
-                selected = "default",
+                choices = c("Single Run" = "single", "Queue Mode" = "queue"),
+                selected = mode,
                 inline = TRUE
+              )
+          ),
+
+          # Single Run Mode
+          if (identical(mode, "single")) {
+            tagList(
+              div(class = "msterp-gate-title", "New Run"),
+              nr_input_form_ui(for_queue = FALSE),
+              div(class = "nr-section", style = "text-align: center;",
+                  uiOutput("nr_run_btn"),
+                  uiOutput("nr_run_status_ui")
+              )
+            )
+          } else {
+            # Queue Mode
+            tagList(
+              div(class = "msterp-gate-title", "Queue Mode"),
+              div(class = "nr-queue-entry",
+                  nr_input_form_ui(for_queue = TRUE),
+                  div(class = "nr-section", style = "text-align: center;",
+                      uiOutput("nr_queue_add_btn")
+                  )
               ),
-              conditionalPanel(
-                "input.nr_terpbase_mode == 'default'",
-                textInput(
-                  "nr_terpbase_default_path",
-                  label = NULL,
-                  # Use app-relative path that works on Shiny Server (not Windows-specific Desktop path)
-                  value = "terpbase/Jan2026UniprotHuman.terpbase"
-                )
+              # Queue items list
+              div(class = "nr-queue-list",
+                  uiOutput("nr_queue_items_ui")
               ),
-              conditionalPanel(
-                "input.nr_terpbase_mode == 'upload'",
-                fileInput("nr_terpbase_upload", label = NULL, accept = c(".terpbase", ".rds"))
-              ),
-              uiOutput("nr_light_terpbase")
-          ),
-
-          div(class = "nr-section",
-              strong("2) Formatted data (.xlsx)"),
-              fileInput("nr_formatted_upload", label = NULL, accept = c(".xlsx", ".xls")),
-              uiOutput("nr_light_formatted")
-          ),
-
-          div(class = "nr-section",
-              strong("3) Pipeline (.terpflow)"),
-              fileInput("nr_terpflow_upload", label = NULL, accept = c(".terpflow", ".rds")),
-              uiOutput("nr_light_terpflow")
-          ),
-
-          div(class = "nr-section",
-              strong("4) Run Name (optional)"),
-              textInput("nr_run_name", label = NULL, placeholder = "e.g., my_analysis", width = "70%")
-          ),
-
-          div(class = "nr-section", style = "text-align: center;",
-              uiOutput("nr_run_btn"),
-              uiOutput("nr_run_status_ui")
-          )
+              # Queue actions bar
+              uiOutput("nr_queue_actions_ui")
+            )
+          }
         )
       )
     )
@@ -468,7 +702,7 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
         )
       },
       tags$hr(),
-      div(strong(""), tags$br(), div(class = "nr-log", uiOutput("nr_log_tail"))),
+      div(strong(""), tags$br(), div(id = "nr_single_log_container", class = "nr-log")),
 
       # Actions section - show after run completes
       if (rv$last_status %in% c("done", "error")) {
@@ -480,12 +714,131 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
     )
   }
 
+  # Queue running panel UI (shows during queue execution)
+  nr_queue_running_panel_ui <- function() {
+    n_items <- length(rv$queue_items)
+    n_done <- sum(vapply(rv$queue_items, function(x) x$status %in% c("done", "error"), logical(1)))
+    current_idx <- rv$queue_current_index
+    overall_pct <- if (n_items > 0) round((n_done / n_items) * 100) else 0
+
+    # Get current item progress
+    current_item <- if (current_idx >= 1 && current_idx <= n_items) rv$queue_items[[current_idx]] else NULL
+    current_pct <- if (!is.null(current_item)) current_item$progress$pct %||% 0 else 0
+    current_msg <- if (!is.null(current_item)) current_item$progress$msg %||% "" else ""
+    current_name <- if (!is.null(current_item)) current_item$name else ""
+
+    div(
+      class = "nr-running-panel",
+      # Overall progress
+      div(class = "nr-queue-overall",
+          div(class = "nr-queue-overall-text",
+              sprintf("Queue Progress: %d of %d items (%d%%)", n_done, n_items, overall_pct)
+          ),
+          div(class = "nr-progress-bar",
+              div(class = "nr-progress-fill", style = paste0("width:", overall_pct, "%;"))
+          )
+      ),
+      # Current item progress
+      if (!is.null(current_item) && identical(current_item$status, "running")) {
+        div(style = "margin-bottom: 12px;",
+            div(class = "nr-row",
+                div(class = "nr-status-pill running", sprintf("Running: %s", current_name)),
+                div(class = "nr-elapsed", uiOutput("nr_queue_elapsed_time")),
+                div(class = "nr-msg", current_msg)
+            ),
+            div(class = "nr-progress-wrap",
+                div(class = "nr-progress-bar",
+                    div(class = "nr-progress-fill active", style = paste0("width:", current_pct, "%;"))
+                )
+            )
+        )
+      },
+      # Stop button
+      div(class = "nr-actions", style = "margin-top: 10px;",
+          actionButton("nr_queue_stop", "Stop Queue", class = "btn btn-danger btn-sm")
+      ),
+      tags$hr(),
+      # Log output - use ID for custom message updates to preserve scroll
+      div(strong("Queue Log"), tags$br(), div(id = "nr_queue_log_container", class = "nr-log"))
+    )
+  }
+
   output$nr_main_panel <- renderUI({
-    if (rv$last_status %in% c("running", "done", "error")) {
+    # Check for queue running state first
+    if (rv$queue_running) {
+      invalidateLater(500, session)
+      nr_queue_running_panel_ui()
+    } else if (rv$last_status %in% c("running", "done", "error")) {
       nr_running_panel_ui()
     } else {
       nr_gate_panel_ui()
     }
+  })
+
+  # Queue elapsed time display
+  output$nr_queue_elapsed_time <- renderUI({
+    if (!rv$queue_running) return(NULL)
+    invalidateLater(1000, session)
+
+    if (is.null(rv$queue_start_time)) return(NULL)
+
+    elapsed <- as.numeric(difftime(Sys.time(), rv$queue_start_time, units = "secs"))
+    mins <- floor(elapsed / 60)
+    secs <- floor(elapsed %% 60)
+    sprintf("%d:%02d", mins, secs)
+  })
+
+  # Queue log output - use observer with custom message to preserve scroll position
+  observe({
+    if (!rv$queue_running) return()
+    invalidateLater(500, session)
+
+    # Combine UI log with current item's log
+    ui_lines <- rv$ui_log
+    file_lines <- character(0)
+
+    # Get current item's log if running
+    idx <- rv$queue_current_index
+    if (idx >= 1 && idx <= length(rv$queue_items)) {
+      item <- rv$queue_items[[idx]]
+      log_path <- item$log_path
+      if (!is.null(log_path) && file.exists(log_path)) {
+        file_lines <- tryCatch(
+          readLines(log_path, warn = FALSE, encoding = "UTF-8"),
+          error = function(e) character(0)
+        )
+      }
+    }
+
+    all_lines <- c(ui_lines, file_lines)
+    if (length(all_lines) == 0) {
+      html_content <- '<span style="color: #5b5b5b;">(waiting for run...)</span>'
+    } else {
+      all_lines <- utils::tail(all_lines, 200)
+
+      format_log_line <- function(line) {
+        line <- gsub("&", "&amp;", line, fixed = TRUE)
+        line <- gsub("<", "&lt;", line, fixed = TRUE)
+        line <- gsub(">", "&gt;", line, fixed = TRUE)
+        if (grepl("^\\[", line)) {
+          line <- gsub("^(\\[[^\\]]+\\])", '<span style="color:#888;">\\1</span>', line)
+          line <- gsub('(<\\/span> )(\\[[^\\]]+\\])', '\\1<span style="color:#aaa;">\\2</span>', line)
+        }
+        if (grepl("===", line)) {
+          line <- gsub("(=== .+ ===)", '<span style="font-weight:700;color:#f0f0f0;">\\1</span>', line)
+        }
+        line
+      }
+
+      formatted_lines <- vapply(all_lines, format_log_line, character(1), USE.NAMES = FALSE)
+      html_content <- paste(formatted_lines, collapse = "<br/>")
+    }
+
+    # Send via custom message to preserve scroll position
+    session$sendCustomMessage("nr_update_log", list(
+      id = "nr_queue_log_container",
+      html = html_content
+    ))
   })
 
   output$nr_run_status_ui <- renderUI({
@@ -872,8 +1225,10 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
     sprintf("%d:%02d", mins, secs)
   })
   
-  output$nr_log_tail <- renderUI({
-    # Poll while running
+  # Single-run log output - use observer with custom message to preserve scroll position
+  observe({
+    # Poll while running or when we have a run_root to show completed log
+    if (!identical(rv$last_status, "running") && is.null(rv$run_root)) return()
     if (identical(rv$last_status, "running")) {
       invalidateLater(500, session)
     }
@@ -883,42 +1238,43 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
     file_lines <- character(0)
 
     if (!is.null(rv$run_root) && !is.null(rv$log_path) && file.exists(rv$log_path)) {
-      file_lines <- readLines(rv$log_path, warn = FALSE, encoding = "UTF-8")
+      file_lines <- tryCatch(
+        readLines(rv$log_path, warn = FALSE, encoding = "UTF-8"),
+        error = function(e) character(0)
+      )
     }
 
     all_lines <- c(ui_lines, file_lines)
-    if (length(all_lines) == 0) return(tags$span(style = "color: #5b5b5b;", "(waiting for run...)"))
+    if (length(all_lines) == 0) {
+      html_content <- '<span style="color: #5b5b5b;">(waiting for run...)</span>'
+    } else {
+      # Take last 200 lines
+      all_lines <- utils::tail(all_lines, 200)
 
-    # Take last 200 lines
-    all_lines <- utils::tail(all_lines, 200)
-
-    # Format each line with styled spans
-    # Pattern: [timestamp] [engine_id] message  OR  [timestamp] message
-    format_log_line <- function(line) {
-      # Escape HTML entities
-      line <- gsub("&", "&amp;", line, fixed = TRUE)
-      line <- gsub("<", "&lt;", line, fixed = TRUE)
-      line <- gsub(">", "&gt;", line, fixed = TRUE)
-
-      # Match patterns like [timestamp] or [engine_id]
-      # Step labels like "=== Step N: engine ===" get bold treatment
-      if (grepl("^\\[", line)) {
-        # Extract timestamp (first bracketed item) - lighter gray for dark bg
-        line <- gsub("^(\\[[^\\]]+\\])", '<span style="color:#888;">\\1</span>', line)
-        # Style additional bracketed items (engine_id) - slightly brighter
-        line <- gsub('(<\\/span> )(\\[[^\\]]+\\])', '\\1<span style="color:#aaa;">\\2</span>', line)
+      # Format each line with styled spans
+      format_log_line <- function(line) {
+        line <- gsub("&", "&amp;", line, fixed = TRUE)
+        line <- gsub("<", "&lt;", line, fixed = TRUE)
+        line <- gsub(">", "&gt;", line, fixed = TRUE)
+        if (grepl("^\\[", line)) {
+          line <- gsub("^(\\[[^\\]]+\\])", '<span style="color:#888;">\\1</span>', line)
+          line <- gsub('(<\\/span> )(\\[[^\\]]+\\])', '\\1<span style="color:#aaa;">\\2</span>', line)
+        }
+        if (grepl("===", line)) {
+          line <- gsub("(=== .+ ===)", '<span style="font-weight:700;color:#f0f0f0;">\\1</span>', line)
+        }
+        line
       }
 
-      # Bold step/phase labels (=== Step N: xxx ===) - bright for emphasis
-      if (grepl("===", line)) {
-        line <- gsub("(=== .+ ===)", '<span style="font-weight:700;color:#f0f0f0;">\\1</span>', line)
-      }
-
-      line
+      formatted_lines <- vapply(all_lines, format_log_line, character(1), USE.NAMES = FALSE)
+      html_content <- paste(formatted_lines, collapse = "<br/>")
     }
 
-    formatted_lines <- vapply(all_lines, format_log_line, character(1), USE.NAMES = FALSE)
-    HTML(paste(formatted_lines, collapse = "<br/>"))
+    # Send via custom message to preserve scroll position
+    session$sendCustomMessage("nr_update_log", list(
+      id = "nr_single_log_container",
+      html = html_content
+    ))
   })
   
   output$nr_download_ui <- renderUI({
@@ -1006,4 +1362,497 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
       reset_file_input("nr_terpbase_upload")
     }, once = TRUE)
   }, ignoreInit = TRUE)
+
+  # =========================================================
+  # QUEUE MODE OBSERVERS AND UI RENDERERS
+  # =========================================================
+
+  # Add to Queue button UI
+  output$nr_queue_add_btn <- renderUI({
+    if (isTRUE(all_ok())) {
+      actionButton("nr_queue_add", "Add to Queue", class = "btn btn-primary")
+    } else {
+      tags$button(
+        type = "button",
+        class = "btn btn-primary",
+        disabled = "disabled",
+        "Add to Queue"
+      )
+    }
+  })
+
+  # Add item to queue
+  observeEvent(input$nr_queue_add, {
+    if (!isTRUE(all_ok())) {
+      return()
+    }
+
+    # Create queue item
+    item_id <- paste0("item_", format(Sys.time(), "%Y%m%d%H%M%S"), "_", sample(1000:9999, 1))
+    run_name <- trimws(input$nr_run_name %||% "")
+    if (!nzchar(run_name)) {
+      run_name <- paste0("Run_", length(rv$queue_items) + 1)
+    }
+
+    item <- list(
+      id = item_id,
+      name = run_name,
+      status = "pending",
+      terpbase = list(
+        mode = input$nr_terpbase_mode %||% "default",
+        path = terpbase_path_rx(),
+        display_name = rv$terpbase_filename %||% basename(terpbase_path_rx() %||% "default")
+      ),
+      formatted = list(
+        path = formatted_path_rx(),
+        display_name = rv$formatted_filename %||% basename(formatted_path_rx() %||% "")
+      ),
+      terpflow = list(
+        path = terpflow_path_rx(),
+        display_name = rv$terpflow_filename %||% basename(terpflow_path_rx() %||% "")
+      ),
+      run_root = NULL,
+      progress = list(pct = 0, msg = "Pending"),
+      error = NULL,
+      start_time = NULL,
+      end_time = NULL
+    )
+
+    # Persist files to durable temp location
+    item <- nr_persist_queue_item_files(item)
+
+    # Add to queue
+    rv$queue_items <- c(rv$queue_items, list(item))
+
+    # Reset form for next entry
+    updateTextInput(session, "nr_run_name", value = "")
+    session$onFlushed(function() {
+      reset_file_input("nr_formatted_upload")
+      reset_file_input("nr_terpflow_upload")
+      reset_file_input("nr_terpbase_upload")
+    }, once = TRUE)
+
+    # Reset cached filenames
+    rv$formatted_filename <- NULL
+    rv$terpflow_filename <- NULL
+    rv$terpbase_filename <- NULL
+  }, ignoreInit = TRUE)
+
+  # Queue items list UI
+  output$nr_queue_items_ui <- renderUI({
+    items <- rv$queue_items
+    if (length(items) == 0) {
+      return(div(class = "nr-queue-empty", "No items in queue. Add runs above."))
+    }
+
+    # Force re-render when queue is running
+    if (rv$queue_running) {
+      invalidateLater(500, session)
+    }
+
+    item_cards <- lapply(seq_along(items), function(i) {
+      item <- items[[i]]
+      status_class <- switch(item$status,
+        "running" = "running",
+        "done" = "done",
+        "error" = "error",
+        ""
+      )
+
+      status_dot <- switch(item$status,
+        "pending" = span(class = "nr-dot gray"),
+        "running" = span(class = "nr-dot", style = "background: #ffc107; animation: pulse-running 1.5s infinite;"),
+        "done" = span(class = "nr-dot green"),
+        "error" = span(class = "nr-dot red"),
+        span(class = "nr-dot gray")
+      )
+
+      progress_ui <- NULL
+      if (identical(item$status, "running")) {
+        pct <- item$progress$pct %||% 0
+        progress_ui <- div(class = "nr-queue-item-progress",
+          div(class = "nr-progress-bar",
+            div(class = "nr-progress-fill active", style = paste0("width:", pct, "%;"))
+          )
+        )
+      }
+
+      files_text <- paste0(
+        item$formatted$display_name %||% "data",
+        " + ",
+        item$terpflow$display_name %||% "pipeline"
+      )
+
+      remove_btn <- NULL
+      if (identical(item$status, "pending") && !rv$queue_running) {
+        remove_btn <- actionButton(
+          paste0("nr_queue_remove_", item$id),
+          "",
+          icon = icon("times"),
+          class = "btn btn-sm btn-default",
+          onclick = sprintf("Shiny.setInputValue('nr_queue_remove', '%s', {priority: 'event'})", item$id)
+        )
+      }
+
+      div(class = paste("nr-queue-item", status_class),
+        div(class = "nr-queue-item-num", i),
+        div(class = "nr-queue-item-info",
+          div(class = "nr-queue-item-name", item$name),
+          div(class = "nr-queue-item-files", files_text)
+        ),
+        div(class = "nr-queue-item-status",
+          status_dot,
+          span(style = "font-size: 12px; font-weight: 600;",
+            if (identical(item$status, "running")) item$progress$msg %||% "Running..."
+            else if (identical(item$status, "done")) "Complete"
+            else if (identical(item$status, "error")) item$error %||% "Failed"
+            else "Pending"
+          )
+        ),
+        progress_ui,
+        div(class = "nr-queue-item-actions", remove_btn)
+      )
+    })
+
+    do.call(tagList, item_cards)
+  })
+
+  # Remove item from queue
+  observeEvent(input$nr_queue_remove, {
+    item_id <- input$nr_queue_remove
+    rv$queue_items <- rv$queue_items[
+      !vapply(rv$queue_items, function(x) identical(x$id, item_id), logical(1))
+    ]
+  }, ignoreInit = TRUE)
+
+  # Queue actions bar UI
+  output$nr_queue_actions_ui <- renderUI({
+    items <- rv$queue_items
+    if (length(items) == 0) return(NULL)
+
+    # Check completion status
+    all_complete <- all(vapply(items, function(x) x$status %in% c("done", "error"), logical(1)))
+    n_done <- sum(vapply(items, function(x) identical(x$status, "done"), logical(1)))
+
+    div(class = "nr-queue-actions-bar",
+      if (rv$queue_running) {
+        tagList(
+          actionButton("nr_queue_stop", "Stop Queue", class = "btn btn-danger"),
+          span(style = "font-weight: 600; margin-left: 10px;",
+            sprintf("Running %d of %d...", rv$queue_current_index, length(items))
+          )
+        )
+      } else if (all_complete) {
+        tagList(
+          if (n_done > 0) {
+            downloadButton("nr_queue_download_all", sprintf("Download All Results (%d)", n_done), class = "btn btn-primary")
+          },
+          actionButton("nr_queue_clear", "Clear Queue", class = "btn btn-default"),
+          actionButton("nr_queue_new", "New Queue", class = "btn btn-default")
+        )
+      } else {
+        tagList(
+          actionButton("nr_queue_run_all", "Run All", class = "btn btn-primary btn-lg"),
+          actionButton("nr_queue_clear", "Clear Queue", class = "btn btn-default")
+        )
+      }
+    )
+  })
+
+  # Clear queue
+  observeEvent(input$nr_queue_clear, {
+    if (rv$queue_running) return()
+    rv$queue_items <- list()
+  }, ignoreInit = TRUE)
+
+  # New queue (reset completed queue)
+  observeEvent(input$nr_queue_new, {
+    rv$queue_items <- list()
+    rv$queue_running <- FALSE
+    rv$queue_current_index <- 0
+    rv$queue_bg_process <- NULL
+    rv$queue_results_dir <- NULL
+    rv$ui_log <- character(0)
+  }, ignoreInit = TRUE)
+
+  # Helper to start next queue item
+  start_next_queue_item <- function() {
+    rv$queue_current_index <- rv$queue_current_index + 1
+    idx <- rv$queue_current_index
+
+    if (idx > length(rv$queue_items)) {
+      # All items complete
+      rv$queue_running <- FALSE
+      rv$queue_bg_process <- NULL
+      n_done <- sum(vapply(rv$queue_items, function(x) identical(x$status, "done"), logical(1)))
+      n_error <- sum(vapply(rv$queue_items, function(x) identical(x$status, "error"), logical(1)))
+      ui_log(sprintf("=== Queue Complete: %d succeeded, %d failed ===", n_done, n_error))
+      return()
+    }
+
+    item <- rv$queue_items[[idx]]
+    ui_log(sprintf("=== Starting Item %d/%d: %s ===", idx, length(rv$queue_items), item$name))
+
+    # Update item status
+    rv$queue_items[[idx]]$status <- "running"
+    rv$queue_items[[idx]]$start_time <- Sys.time()
+    rv$queue_items[[idx]]$progress <- list(pct = 0, msg = "Initiating...")
+
+    # Create item-specific output directory
+    item_out_dir <- file.path(rv$queue_results_dir, sprintf("item_%03d_%s", idx, item$id))
+    dir.create(item_out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    # Create run directory
+    run_name <- paste0(nr_sanitize(item$name), "_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+    run_root <- file.path(item_out_dir, paste0(run_name, ".terpbook"))
+    dir.create(run_root, recursive = TRUE, showWarnings = FALSE)
+
+    progress_path <- file.path(run_root, "progress.json")
+    log_path <- file.path(run_root, "log.txt")
+
+    # Write initial progress
+    write_progress(progress_path, "running", "Initializing...", 5)
+
+    # Store paths in item
+    rv$queue_items[[idx]]$run_root <- run_root
+    rv$queue_items[[idx]]$progress_path <- progress_path
+    rv$queue_items[[idx]]$log_path <- log_path
+
+    # Get paths
+    tb_norm <- if (!is.null(item$terpbase$path) && nzchar(item$terpbase$path)) nr_norm(item$terpbase$path) else NULL
+    ff_norm <- nr_norm(item$formatted$path)
+    tf_norm <- nr_norm(item$terpflow$path)
+    out_norm <- nr_norm(item_out_dir)
+    app_root <- getwd()
+
+    # Queue runner function (same as single run but simpler)
+    queue_runner_fn <- function(app_root, formatted_path, terpflow_path, terpbase_path,
+                                out_dir, run_name, progress_path, log_path) {
+      setwd(app_root)
+
+      write_prog <- function(status, message, pct = NULL) {
+        obj <- list(status = status, message = message, pct = pct,
+                    timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
+        jsonlite::write_json(obj, progress_path, auto_unbox = TRUE, pretty = TRUE)
+      }
+
+      write_log <- function(msg) {
+        is_first <- !file.exists(log_path) || file.info(log_path)$size == 0
+        time_str <- format(Sys.time(), if (is_first) "%Y-%m-%d %H:%M:%S" else "%H:%M:%S")
+        cat(sprintf("[%s] %s\n", time_str, msg), file = log_path, append = TRUE)
+      }
+
+      write_prog("running", "Loading engine code...", 8)
+      write_log("Loading engine code...")
+
+      tryCatch({
+        source(file.path(app_root, "R", "00_init.R"), local = FALSE)
+        engine_files <- list.files(file.path(app_root, "R", "engines"), pattern = "\\.R$", full.names = TRUE)
+        for (f in engine_files) source(f, local = FALSE)
+        stats_files <- list.files(file.path(app_root, "R", "engines", "stats"), pattern = "\\.R$", full.names = TRUE)
+        for (f in stats_files) source(f, local = FALSE)
+        utils_files <- list.files(file.path(app_root, "R", "utils"), pattern = "\\.R$", full.names = TRUE)
+        for (f in utils_files) source(f, local = FALSE)
+        write_log("Engine code loaded")
+      }, error = function(e) {
+        write_prog("error", paste("Failed to load engine code:", conditionMessage(e)), 0)
+        write_log(paste("ERROR:", conditionMessage(e)))
+        stop(e)
+      })
+
+      progress_callback <- function(status, msg, pct) {
+        write_prog("running", msg, pct)
+        write_log(msg)
+      }
+
+      result <- tryCatch({
+        nr_execute_run(
+          formatted_path = formatted_path,
+          terpflow_path = terpflow_path,
+          terpbase_path = terpbase_path,
+          out_dir = out_dir,
+          run_name = run_name,
+          progress_callback = progress_callback
+        )
+      }, error = function(e) {
+        write_prog("error", paste("Pipeline failed:", conditionMessage(e)), 0)
+        write_log(paste("ERROR:", conditionMessage(e)))
+        list(ok = FALSE, error = conditionMessage(e))
+      })
+
+      if (isTRUE(result$ok)) {
+        write_prog("done", "Complete!", 100)
+        write_log("Pipeline completed successfully")
+      }
+
+      result
+    }
+
+    # Launch background process
+    rv$queue_bg_process <- callr::r_bg(
+      func = queue_runner_fn,
+      args = list(
+        app_root = app_root,
+        formatted_path = ff_norm,
+        terpflow_path = tf_norm,
+        terpbase_path = tb_norm,
+        out_dir = out_norm,
+        run_name = run_name,
+        progress_path = progress_path,
+        log_path = log_path
+      ),
+      package = TRUE,
+      supervise = TRUE
+    )
+  }
+
+  # Run All - start queue execution
+  observeEvent(input$nr_queue_run_all, {
+    if (length(rv$queue_items) == 0) return()
+    if (rv$queue_running) return()
+
+    rv$queue_running <- TRUE
+    rv$queue_current_index <- 0
+    rv$queue_start_time <- Sys.time()
+    rv$queue_results_dir <- tempfile("queue_results_")
+    dir.create(rv$queue_results_dir, recursive = TRUE)
+    rv$ui_log <- character(0)
+
+    ui_log("=== Starting Queue Execution ===")
+    ui_log(sprintf("Items in queue: %d", length(rv$queue_items)))
+
+    # Reset all items to pending
+    for (i in seq_along(rv$queue_items)) {
+      rv$queue_items[[i]]$status <- "pending"
+      rv$queue_items[[i]]$progress <- list(pct = 0, msg = "Waiting...")
+      rv$queue_items[[i]]$error <- NULL
+      rv$queue_items[[i]]$run_root <- NULL
+    }
+
+    # Start first item
+    start_next_queue_item()
+  }, ignoreInit = TRUE)
+
+  # Queue progress polling observer
+  observe({
+    if (!rv$queue_running || is.null(rv$queue_bg_process)) return()
+
+    idx <- rv$queue_current_index
+    if (idx < 1 || idx > length(rv$queue_items)) return()
+
+    item <- rv$queue_items[[idx]]
+    progress_path <- item$progress_path
+
+    # Poll progress file
+    if (!is.null(progress_path) && file.exists(progress_path)) {
+      prog <- tryCatch(jsonlite::read_json(progress_path), error = function(e) NULL)
+      if (!is.null(prog)) {
+        rv$queue_items[[idx]]$progress <- list(
+          pct = as.numeric(prog$pct %||% 0),
+          msg = as.character(prog$message %||% "")
+        )
+      }
+    }
+
+    # Check if process completed
+    if (!rv$queue_bg_process$is_alive()) {
+      result <- tryCatch(rv$queue_bg_process$get_result(), error = function(e) {
+        list(ok = FALSE, error = conditionMessage(e))
+      })
+
+      # Update item status
+      if (isTRUE(result$ok)) {
+        rv$queue_items[[idx]]$status <- "done"
+        if (!is.null(result$run_root)) {
+          rv$queue_items[[idx]]$run_root <- nr_norm(result$run_root)
+        }
+        ui_log(sprintf("Item %d complete: %s", idx, item$name))
+      } else {
+        rv$queue_items[[idx]]$status <- "error"
+        rv$queue_items[[idx]]$error <- result$error %||% "Unknown error"
+        ui_log(sprintf("Item %d FAILED: %s - %s", idx, item$name, result$error %||% "Unknown error"))
+      }
+
+      rv$queue_items[[idx]]$end_time <- Sys.time()
+      rv$queue_bg_process <- NULL
+
+      # Continue to next item
+      start_next_queue_item()
+    } else {
+      # Still running - poll again
+      invalidateLater(500, session)
+    }
+  })
+
+  # Stop queue execution
+  observeEvent(input$nr_queue_stop, {
+    if (!rv$queue_running) return()
+
+    # Kill current background process
+    if (!is.null(rv$queue_bg_process) && rv$queue_bg_process$is_alive()) {
+      tryCatch(rv$queue_bg_process$kill(), error = function(e) NULL)
+    }
+
+    # Mark current item as error
+    idx <- rv$queue_current_index
+    if (idx >= 1 && idx <= length(rv$queue_items)) {
+      rv$queue_items[[idx]]$status <- "error"
+      rv$queue_items[[idx]]$error <- "Stopped by user"
+    }
+
+    rv$queue_running <- FALSE
+    rv$queue_bg_process <- NULL
+
+    ui_log("Queue stopped by user")
+  }, ignoreInit = TRUE)
+
+  # Download all queue results
+  output$nr_queue_download_all <- downloadHandler(
+    filename = function() {
+      paste0("queue_results_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".zip")
+    },
+    content = function(file) {
+      # Collect all successful terpbooks
+      terpbooks <- list()
+      for (item in rv$queue_items) {
+        if (identical(item$status, "done") && !is.null(item$run_root) && dir.exists(item$run_root)) {
+          terpbooks[[item$name]] <- item$run_root
+        }
+      }
+
+      if (length(terpbooks) == 0) {
+        stop("No completed runs to download")
+      }
+
+      # Create combined zip directory
+      temp_zip_dir <- tempfile("combined_")
+      dir.create(temp_zip_dir, recursive = TRUE)
+
+      for (name in names(terpbooks)) {
+        src <- terpbooks[[name]]
+        safe_name <- nr_sanitize(name)
+        dest <- file.path(temp_zip_dir, paste0(safe_name, ".terpbook"))
+        file.copy(src, dest, recursive = TRUE)
+      }
+
+      # Add queue summary CSV
+      summary_df <- data.frame(
+        Name = vapply(rv$queue_items, function(x) x$name %||% "", character(1)),
+        Status = vapply(rv$queue_items, function(x) x$status %||% "", character(1)),
+        Error = vapply(rv$queue_items, function(x) x$error %||% "", character(1)),
+        stringsAsFactors = FALSE
+      )
+      write.csv(summary_df, file.path(temp_zip_dir, "queue_summary.csv"), row.names = FALSE)
+
+      # Zip everything
+      old_wd <- setwd(temp_zip_dir)
+      on.exit(setwd(old_wd), add = TRUE)
+
+      if (requireNamespace("zip", quietly = TRUE)) {
+        zip::zipr(zipfile = file, files = list.files("."))
+      } else {
+        utils::zip(zipfile = file, files = list.files("."), flags = "-r9X")
+      }
+    }
+  )
 }
