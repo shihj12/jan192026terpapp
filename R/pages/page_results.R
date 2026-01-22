@@ -95,23 +95,46 @@ res_switch_input <- function(id, left_label, right_label, value = FALSE, help_ti
 }
 
 # ---- Collapsible section UI helper -----------------------------------------
-# Uses bslib::accordion for native Bootstrap accordion functionality
+# Custom collapsible panel using plain HTML/CSS/JS (works with Bootstrap 3)
 res_collapse_section_ui <- function(id, title, badge_text = NULL, open = FALSE, ...) {
-  # Build title with optional badge
+  content_id <- paste0(id, "_content")
 
-  title_with_badge <- if (!is.null(badge_text)) {
-    tagList(title, tags$span(class = "ms-2 badge bg-secondary", badge_text))
+  # Build title with optional badge
+  title_content <- if (!is.null(badge_text)) {
+    tagList(
+      tags$span(class = "res-accordion-title", title),
+      tags$span(class = "res-accordion-badge", badge_text)
+    )
   } else {
-    title
+    tags$span(class = "res-accordion-title", title)
   }
 
-  bslib::accordion(
-    id = id,
-    open = if (open) id else FALSE,
-    bslib::accordion_panel(
-      title = title_with_badge,
-      value = id,
-      ...
+  div(
+    class = "res-accordion-item",
+    # Header button
+    tags$button(
+      type = "button",
+      class = paste0("res-accordion-header", if (open) " res-accordion-open" else ""),
+      onclick = sprintf("(function(btn){
+        var content = document.getElementById('%s');
+        var isOpen = btn.classList.contains('res-accordion-open');
+        if (isOpen) {
+          btn.classList.remove('res-accordion-open');
+          content.style.maxHeight = '0px';
+        } else {
+          btn.classList.add('res-accordion-open');
+          content.style.maxHeight = content.scrollHeight + 'px';
+        }
+      })(this)", content_id),
+      tags$span(class = "res-accordion-chevron", HTML("&#9662;")),
+      title_content
+    ),
+    # Collapsible content
+    div(
+      id = content_id,
+      class = "res-accordion-content",
+      style = if (open) "" else "max-height: 0px;",
+      div(class = "res-accordion-body", ...)
     )
   )
 }
@@ -1342,26 +1365,69 @@ page_results_ui <- function() {
 
         .res-panel-head { height: 10px; background: var(--primary, #c9414d); flex: 0 0 auto; }
 
-        /* === Style Accordion Tweaks (bslib accordion) === */
-        .res-style-controls .accordion {
-          --bs-accordion-border-color: var(--border-light, #e8e4df);
-          --bs-accordion-btn-padding-x: 12px;
-          --bs-accordion-btn-padding-y: 10px;
-          --bs-accordion-body-padding-x: 12px;
-          --bs-accordion-body-padding-y: 12px;
+        /* === Custom Accordion Styles === */
+        .res-accordion-item {
           margin-bottom: 8px;
+          border: 1px solid var(--border-light, #e8e4df);
+          border-radius: 6px;
+          background: var(--bg-card, #fff);
+          overflow: hidden;
         }
-        .res-style-controls .accordion-button {
-          font-weight: 600;
+        .res-accordion-header {
+          display: flex;
+          align-items: center;
+          width: 100%;
+          padding: 10px 12px;
+          border: none;
+          background: var(--bg-muted, #f5f3f0);
+          cursor: pointer;
+          font-family: inherit;
           font-size: 13px;
-          background: var(--bg-muted, #f5f3f0);
-        }
-        .res-style-controls .accordion-button:not(.collapsed) {
-          background: var(--bg-muted, #f5f3f0);
+          font-weight: 600;
           color: var(--text-primary, #1a1a1a);
+          text-align: left;
+          transition: background 0.15s ease;
         }
-        .res-style-controls .accordion-body {
+        .res-accordion-header:hover {
+          background: var(--bg-hover, #eceae6);
+        }
+        .res-accordion-header:focus {
+          outline: none;
+          box-shadow: inset 0 0 0 2px var(--primary, #c9414d);
+        }
+        .res-accordion-chevron {
+          display: inline-block;
+          margin-right: 8px;
+          font-size: 10px;
+          color: var(--text-secondary, #5a5a5a);
+          transition: transform 0.2s ease;
+        }
+        .res-accordion-header.res-accordion-open .res-accordion-chevron {
+          transform: rotate(0deg);
+        }
+        .res-accordion-header:not(.res-accordion-open) .res-accordion-chevron {
+          transform: rotate(-90deg);
+        }
+        .res-accordion-title {
+          flex: 1;
+        }
+        .res-accordion-badge {
+          display: inline-block;
+          padding: 2px 6px;
+          margin-left: 8px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-secondary, #5a5a5a);
+          background: var(--bg-card, #fff);
+          border-radius: 10px;
+        }
+        .res-accordion-content {
+          overflow: hidden;
+          transition: max-height 0.25s ease;
+        }
+        .res-accordion-body {
           padding: 12px;
+          border-top: 1px solid var(--border-light, #e8e4df);
         }
 
         .res-panel-body {
@@ -4229,7 +4295,7 @@ page_results_server <- function(input, output, session) {
       })
     }))
 
-    # Build accordion panels for each section
+    # Build accordion panels for each section using custom collapsible UI
     accordions_ui <- tagList(lapply(names(STYLE_SECTIONS), function(section_name) {
       section_def <- STYLE_SECTIONS[[section_name]]
       fields_in_section <- section_fields[[section_name]]
@@ -4251,7 +4317,6 @@ page_results_server <- function(input, output, session) {
       }))
 
       # Create collapsible section with field count badge
-      # bslib::accordion handles open/close state natively
       section_id <- paste0("style_section_", section_name)
       res_collapse_section_ui(
         id = section_id,
@@ -4399,6 +4464,71 @@ page_results_server <- function(input, output, session) {
       )
     }
 
+    # Build cluster analysis panel for heatmap engines
+    # Uses existing color_mode selector to determine which dendrogram to cut
+    # Checkbox toggles cluster color bar on/off, slider sets k
+    cluster_panel_ui <- NULL
+    if (eng_lower %in% c("heatmap", "ftest_heatmap")) {
+      res <- isolate(active_results())
+      if (!is.null(res) && !is.null(res$data)) {
+        # Check which dendrograms are available
+        dendro_avail <- heatmap_dendro_available(res)
+        if (any(dendro_avail)) {
+          # Get current color_mode from effective state to determine dendro type
+          current_color_mode <- eff$style$color_mode %||% "zscore"
+          dendro_type <- if (current_color_mode == "abundance") "abundance" else "zscore"
+
+          # Fall back if selected dendro not available
+          if (!dendro_avail[dendro_type]) {
+            dendro_type <- if (dendro_avail["zscore"]) "zscore" else "abundance"
+          }
+
+          max_k <- heatmap_cluster_max_k(res, dendro_type)
+          # Get current values from style
+          current_cluster_k <- as.integer(eff$style$cluster_k %||% 2)
+          if (current_cluster_k < 2) current_cluster_k <- 2
+          if (current_cluster_k > max_k) current_cluster_k <- max_k
+          show_clusters <- isTRUE(eff$style$show_cluster_colors %||% FALSE)
+
+          if (max_k >= 2) {
+            cluster_panel_ui <- div(
+              style = "margin-top: 16px; padding-top: 12px; border-top: 1px solid #dee2e6;",
+              tags$h6(
+                style = "font-weight: 600; margin-bottom: 10px; color: #495057;",
+                "Cluster Analysis"
+              ),
+              tags$small(
+                class = "text-muted d-block mb-2",
+                sprintf("Using %s dendrogram (from Color mode above)",
+                        if (dendro_type == "zscore") "Z-score" else "Abundance")
+              ),
+              checkboxInput(
+                "res_show_cluster_colors",
+                "Show cluster colors on heatmap",
+                value = show_clusters
+              ),
+              sliderInput(
+                "res_cluster_k",
+                "Number of clusters (k)",
+                min = 2,
+                max = max_k,
+                value = current_cluster_k,
+                step = 1,
+                width = "100%"
+              ),
+              uiOutput("res_cluster_preview"),
+              actionButton(
+                "res_run_cluster_goora",
+                "Run GO-ORA on Clusters",
+                class = "btn btn-primary btn-sm",
+                style = "margin-top: 8px; width: 100%;"
+              )
+            )
+          }
+        }
+      }
+    }
+
     tagList(
       h4("Style"),
       view_mode_ui,
@@ -4408,7 +4538,8 @@ page_results_server <- function(input, output, session) {
       selected_group_ui,  # Group selector at top for hor_dis/vert_dis (conditional on within_groups mode)
       selectors_ui,       # Selector fields (always visible, not in accordions)
       accordions_ui,      # Accordion panels for grouped fields
-      table_filter_ui     # Table filters for GO engines
+      table_filter_ui,    # Table filters for GO engines
+      cluster_panel_ui    # Cluster analysis for heatmap engines
       # Apply button and reset override removed - updates happen automatically
     )
   })
@@ -7096,6 +7227,679 @@ page_results_server <- function(input, output, session) {
     updateNumericInput(session, "res_filter_score_y_min", value = NA)
     updateNumericInput(session, "res_filter_n_genes_min", value = NA)
     updateNumericInput(session, "res_filter_fdr_max", value = NA)
+  }, ignoreInit = TRUE)
+
+  # ---- Cluster Analysis for Heatmap Engines ----------------------------------
+
+  # Helper to get current dendrogram type from color_mode style setting
+  get_cluster_dendro_type <- function() {
+    eff <- active_effective_state()
+    color_mode <- eff$style$color_mode %||% "zscore"
+    if (color_mode == "abundance") "abundance" else "zscore"
+  }
+
+  # Update k slider max when color_mode changes (triggered by style update)
+  # Use isolate() for get_cluster_dendro_type() to avoid reactive loop:
+  # style_rev -> active_effective_state -> get_cluster_dendro_type -> observe ->
+  # updateSliderInput -> observeEvent(cluster_k) -> style_rev
+  observe({
+    eng <- active_engine_id()
+    if (!tolower(eng %||% "") %in% c("heatmap", "ftest_heatmap")) return()
+
+    res <- active_results()
+    if (is.null(res)) return()
+
+    # Isolate to prevent reactive loop - we only need to update max_k when
+    # the results change, not when style changes
+    dendro_type <- isolate(get_cluster_dendro_type())
+    dendro_avail <- heatmap_dendro_available(res)
+
+    # Fall back if selected dendro not available
+    if (!dendro_avail[dendro_type]) {
+      dendro_type <- if (dendro_avail["zscore"]) "zscore" else "abundance"
+    }
+
+    max_k <- heatmap_cluster_max_k(res, dendro_type)
+    if (max_k >= 2) {
+      current_k <- isolate(input$res_cluster_k) %||% 5
+      new_k <- min(current_k, max_k)
+      # Only update if max changed or value needs clamping to avoid triggering
+      # unnecessary observeEvent(input$res_cluster_k) firings
+      if (new_k != current_k) {
+        updateSliderInput(session, "res_cluster_k", max = max_k, value = new_k)
+      } else {
+        updateSliderInput(session, "res_cluster_k", max = max_k)
+      }
+    }
+  })
+
+  # Cluster size preview
+  output$res_cluster_preview <- renderUI({
+    eng <- active_engine_id()
+    if (!tolower(eng %||% "") %in% c("heatmap", "ftest_heatmap")) return(NULL)
+
+    res <- active_results()
+    if (is.null(res)) return(NULL)
+
+    k <- input$res_cluster_k %||% 2
+    if (k < 2) k <- 2
+
+    dendro_type <- get_cluster_dendro_type()
+    dendro_avail <- heatmap_dendro_available(res)
+    if (!dendro_avail[dendro_type]) {
+      dendro_type <- if (dendro_avail["zscore"]) "zscore" else "abundance"
+    }
+
+    sizes <- heatmap_cluster_preview(res, dendro_type, k)
+    if (is.null(sizes) || length(sizes) == 0) {
+      return(tags$small(class = "text-muted", "Unable to preview clusters"))
+    }
+
+    # Build preview text with color swatches
+    cluster_colors <- grDevices::hcl.colors(k, palette = "Set2")
+    preview_items <- lapply(seq_along(sizes), function(i) {
+      tags$div(
+        style = "font-size: 11px; color: #666; display: flex; align-items: center; gap: 6px;",
+        tags$span(
+          style = sprintf("display: inline-block; width: 12px; height: 12px; background: %s; border-radius: 2px;", cluster_colors[i])
+        ),
+        sprintf("Cluster %d: %d genes", i, sizes[i])
+      )
+    })
+
+    tags$div(
+      style = "margin-top: 8px; padding: 8px; background: #f8f9fa; border-radius: 4px;",
+      tags$div(style = "font-weight: 600; font-size: 11px; margin-bottom: 4px;", "Cluster sizes:"),
+      tagList(preview_items)
+    )
+  })
+
+  # Sync show_cluster_colors checkbox to style field
+  observeEvent(input$res_show_cluster_colors, {
+    eng <- active_engine_id()
+    if (!tolower(eng %||% "") %in% c("heatmap", "ftest_heatmap")) return()
+
+    nd <- active_node_dir()
+    if (is.null(nd)) return()
+
+    node_id <- rv$active_node_id
+    if (is.null(node_id)) return()
+
+    show <- isTRUE(input$res_show_cluster_colors)
+
+    # Also capture current cluster_k - important because the slider's observeEvent
+    # has ignoreInit=TRUE, so if slider is at initial value (2), cluster_k may not
+    # have been saved yet. We need it for the heatmap render.
+    k <- input$res_cluster_k %||% 2
+    if (k < 2) k <- 2
+
+    # Update in-memory cache
+    key <- as.character(node_id)
+    cur_style <- rv$cache_style_by_node[[key]] %||% list()
+    cur_style$show_cluster_colors <- show
+    cur_style$cluster_k <- as.integer(k)
+    rv$cache_style_by_node[[key]] <- cur_style
+
+    # Save to render state on disk
+    rs <- tb_load_render_state(nd)
+    rs$style <- rs$style %||% list()
+    rs$style$show_cluster_colors <- show
+    rs$style$cluster_k <- as.integer(k)
+
+    tryCatch({
+      tb_save_render_state(nd, rs)
+      tb_cache_invalidate_node(nd)
+      # Trigger re-render by incrementing style revision
+      style_rev(isolate(style_rev()) + 1L)
+    }, error = function(e) {
+      # Silently ignore save errors
+    })
+  }, ignoreInit = TRUE)
+
+  # Sync cluster_k slider to style field - only triggers heatmap re-render when
+  # show_cluster_colors is enabled
+  observeEvent(input$res_cluster_k, {
+    eng <- active_engine_id()
+    if (!tolower(eng %||% "") %in% c("heatmap", "ftest_heatmap")) return()
+
+    nd <- active_node_dir()
+    if (is.null(nd)) return()
+
+    node_id <- rv$active_node_id
+    if (is.null(node_id)) return()
+
+    k <- input$res_cluster_k %||% 2
+
+    # Update in-memory cache
+    key <- as.character(node_id)
+    cur_style <- rv$cache_style_by_node[[key]] %||% list()
+    cur_style$cluster_k <- as.integer(k)
+    rv$cache_style_by_node[[key]] <- cur_style
+
+    # Save cluster_k to render state on disk
+    rs <- tb_load_render_state(nd)
+    rs$style <- rs$style %||% list()
+    rs$style$cluster_k <- as.integer(k)
+
+    # Check if cluster colors are currently displayed
+    show_clusters <- isTRUE(cur_style$show_cluster_colors) ||
+                     isTRUE(rs$style$show_cluster_colors)
+
+    tryCatch({
+      tb_save_render_state(nd, rs)
+      tb_cache_invalidate_node(nd)
+      # Only trigger re-render if cluster colors are being shown
+      if (show_clusters) {
+        style_rev(isolate(style_rev()) + 1L)
+      }
+    }, error = function(e) {
+      # Silently ignore save errors
+    })
+  }, ignoreInit = TRUE)
+
+  # Run GO-ORA on clusters
+  observeEvent(input$res_run_cluster_goora, {
+    message("[DEBUG] res_run_cluster_goora button clicked!")
+    eng <- active_engine_id()
+    if (!tolower(eng %||% "") %in% c("heatmap", "ftest_heatmap")) {
+      showNotification("Cluster GO-ORA is only available for heatmap results", type = "error")
+      return()
+    }
+
+    res <- active_results()
+    if (is.null(res)) {
+      showNotification("No heatmap results loaded", type = "error")
+      return()
+    }
+
+    node <- active_node_row()
+    if (is.null(node)) {
+      showNotification("No active node", type = "error")
+      return()
+    }
+
+    # Get cluster parameters from slider
+    k <- input$res_cluster_k %||% 0
+    if (k < 2) {
+      showNotification("Please select at least 2 clusters to run GO-ORA", type = "warning")
+      return()
+    }
+
+    # Get dendrogram type from color_mode style
+    dendro_type <- get_cluster_dendro_type()
+    dendro_avail <- heatmap_dendro_available(res)
+    if (!dendro_avail[dendro_type]) {
+      dendro_type <- if (dendro_avail["zscore"]) "zscore" else "abundance"
+    }
+
+    # Cut dendrogram into clusters
+    cluster_info <- tryCatch({
+      heatmap_cut_clusters(res, dendro_type, k)
+    }, error = function(e) {
+      showNotification(paste("Failed to cut dendrogram:", e$message), type = "error")
+      NULL
+    })
+    if (is.null(cluster_info)) return()
+
+    # Check if terpbase is available for GO-ORA
+    # Terpbase can have GO annotations in either protein_to_go or annot_long format
+    terpbase <- rv$terpbase
+    has_go_data <- !is.null(terpbase) && (
+      !is.null(terpbase$protein_to_go) ||
+      (!is.null(terpbase$annot_long) && "gene" %in% names(terpbase$annot_long) && "ID" %in% names(terpbase$annot_long))
+    )
+
+    if (!has_go_data) {
+      # Store pending analysis state so we can continue after terpbase is loaded
+      rv$pending_cluster_goora <- list(
+        cluster_info = cluster_info,
+        res = res,
+        node = node,
+        eng = eng,
+        dendro_type = dendro_type,
+        k = k
+      )
+      # Show modal to let user upload terpbase
+      showModal(modalDialog(
+        title = "GO Annotations Required",
+        tags$div(
+          id = "cluster_goora_modal_content",
+          tags$p("GO-ORA analysis requires a TerpBase file with GO annotations."),
+          tags$hr(),
+          tags$h5("Load from default library"),
+          selectInput(
+            "res_cluster_terpbase_default_path",
+            NULL,
+            choices = tools_default_terpbase_choices(),
+            selected = "",
+            width = "100%"
+          ),
+          actionButton(
+            "res_cluster_terpbase_default_load",
+            "Load default",
+            class = "btn btn-default btn-sm",
+            style = "margin-bottom: 12px;"
+          ),
+          tags$hr(),
+          tags$h5("Or upload a file"),
+          fileInput(
+            "res_cluster_terpbase_file",
+            NULL,
+            accept = c(".terpbase", ".rds"),
+            width = "100%"
+          ),
+          uiOutput("res_cluster_terpbase_status")
+        ),
+        footer = tagList(
+          actionButton("res_cluster_terpbase_load", "Load & Run GO-ORA", class = "btn-primary"),
+          modalButton("Cancel")
+        ),
+        easyClose = TRUE
+      ))
+      return()
+    }
+
+    # Ensure terpbase has protein_to_go mapping (build from annot_long if needed)
+    if (is.null(terpbase$protein_to_go) && !is.null(terpbase$annot_long)) {
+      annot <- terpbase$annot_long
+      if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
+        genes <- unique(annot$gene)
+        protein_to_go <- lapply(genes, function(g) {
+          unique(annot$ID[annot$gene == g])
+        })
+        names(protein_to_go) <- genes
+        terpbase$protein_to_go <- protein_to_go
+      }
+    }
+
+    # Build go_terms from terms_by_id if missing
+    if (is.null(terpbase$go_terms) && !is.null(terpbase$terms_by_id)) {
+      terms <- terpbase$terms_by_id
+      if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
+        go_terms <- lapply(seq_len(nrow(terms)), function(i) {
+          list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
+        })
+        names(go_terms) <- terms$ID
+        terpbase$go_terms <- go_terms
+      }
+    }
+
+    # Get ID mapping from heatmap results data (not payload)
+    ids_df <- res$data$ids %||% NULL
+    id_protein_col <- res$data$id_cols$protein %||% "protein_id"
+    id_gene_col <- res$data$id_cols$gene %||% "gene_symbol"
+
+    parent_dir <- tb_norm(node$node_dir[[1]])
+    showNotification(sprintf("Running GO-ORA on %d clusters...", k), type = "message", duration = 3)
+
+    # Process each cluster
+    n_created <- 0
+    for (i in seq_len(k)) {
+      cluster_genes <- cluster_info$cluster_genes[[i]]
+      if (length(cluster_genes) == 0) {
+        warning(sprintf("Cluster %d has no genes, skipping GO-ORA", i))
+        next
+      }
+
+      # Convert gene symbols to protein IDs for GO-ORA
+      query_proteins <- heatmap_cluster_to_goora_input(
+        cluster_genes, ids_df, id_protein_col, id_gene_col
+      )
+
+      if (length(query_proteins) == 0) {
+        warning(sprintf("Cluster %d: no proteins mapped, skipping GO-ORA", i))
+        next
+      }
+
+      # Build GO-ORA payload
+      goora_payload <- list(
+        ok = TRUE,
+        query_proteins = query_proteins,
+        terpbase = terpbase
+      )
+
+      goora_params <- list(
+        fdr_cutoff = 0.05,
+        min_term_size = 5,
+        max_term_size = 500
+      )
+
+      # Run GO-ORA
+      goora_results <- tryCatch({
+        stats_goora_run(goora_payload, goora_params)
+      }, error = function(e) {
+        warning(sprintf("Cluster %d GO-ORA failed: %s", i, e$message))
+        NULL
+      })
+
+      if (is.null(goora_results)) next
+
+      # Add cluster info to results
+      goora_results$cluster_info <- list(
+        cluster_number = i,
+        cluster_genes = cluster_genes,
+        n_genes = length(cluster_genes),
+        dendro_type = dendro_type,
+        parent_engine = eng
+      )
+
+      # Create child view
+      view_id <- sprintf("cluster_%d_goora", i)
+      label <- sprintf("Cluster %d GO-ORA (%d genes)", i, length(cluster_genes))
+
+      view_dir <- tryCatch({
+        tb_create_child_view(
+          parent_dir = parent_dir,
+          view_id = view_id,
+          engine_id = "goora",
+          label = label,
+          params = goora_params
+        )
+      }, error = function(e) {
+        warning(sprintf("Failed to create view for cluster %d: %s", i, e$message))
+        NULL
+      })
+
+      if (is.null(view_dir)) next
+
+      # Save results
+      tryCatch({
+        tb_save_child_results(view_dir, goora_results)
+        n_created <- n_created + 1
+      }, error = function(e) {
+        warning(sprintf("Failed to save results for cluster %d: %s", i, e$message))
+      })
+    }
+
+    if (n_created > 0) {
+      # Refresh the tree to show new children
+      rv$nodes_df <- tb_build_nodes_df(rv$run_root, rv$manifest)
+      showNotification(
+        sprintf("Created %d cluster GO-ORA results", n_created),
+        type = "message",
+        duration = 5
+      )
+    } else {
+      showNotification("No cluster GO-ORA results were created", type = "warning")
+    }
+  }, ignoreInit = TRUE)
+
+  # Status display for terpbase file upload in modal
+  output$res_cluster_terpbase_status <- renderUI({
+    f <- input$res_cluster_terpbase_file
+    default_path <- input$res_cluster_terpbase_default_path
+
+    # Check if default is selected
+    if (!is.null(default_path) && nzchar(default_path) && file.exists(default_path)) {
+      return(tags$div(
+        style = "color: #28a745; margin-top: 8px;",
+        icon("check-circle"),
+        sprintf("Default ready: %s", basename(default_path))
+      ))
+    }
+
+    # Check if file is uploaded
+    if (!is.null(f) && !is.null(f$datapath) && nzchar(f$datapath)) {
+      return(tags$div(
+        style = "color: #28a745; margin-top: 8px;",
+        icon("check-circle"),
+        sprintf("File ready: %s", f$name)
+      ))
+    }
+
+    tags$div(class = "text-muted", style = "margin-top: 8px;", "Select a TerpBase to continue")
+  })
+
+  # Helper function to prepare terpbase (build mappings if needed)
+  res_prepare_terpbase <- function(terp) {
+    if (is.null(terp)) return(NULL)
+
+    # Check if terpbase has GO data
+    has_go_data <- !is.null(terp$protein_to_go) ||
+      (!is.null(terp$annot_long) && "gene" %in% names(terp$annot_long) && "ID" %in% names(terp$annot_long))
+
+    if (!has_go_data) return(NULL)
+
+    # Build protein_to_go from annot_long if needed
+    if (is.null(terp$protein_to_go) && !is.null(terp$annot_long)) {
+      annot <- terp$annot_long
+      if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
+        genes <- unique(annot$gene)
+        protein_to_go <- lapply(genes, function(g) {
+          unique(annot$ID[annot$gene == g])
+        })
+        names(protein_to_go) <- genes
+        terp$protein_to_go <- protein_to_go
+      }
+    }
+
+    # Build go_terms from terms_by_id if missing
+    if (is.null(terp$go_terms) && !is.null(terp$terms_by_id)) {
+      terms <- terp$terms_by_id
+      if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
+        go_terms <- lapply(seq_len(nrow(terms)), function(i) {
+          list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
+        })
+        names(go_terms) <- terms$ID
+        terp$go_terms <- go_terms
+      }
+    }
+
+    terp
+  }
+
+  # Helper function to run cluster GO-ORA analysis
+  res_run_cluster_goora <- function(terp, pending) {
+    message("[DEBUG] res_run_cluster_goora helper called")
+    cluster_info <- pending$cluster_info
+    res <- pending$res
+    node <- pending$node
+    eng <- pending$eng
+    k <- pending$k
+
+    message(sprintf("[DEBUG] Processing %d clusters", k))
+
+    # Get ID mapping from heatmap results data (not payload)
+    ids_df <- res$data$ids %||% NULL
+    id_protein_col <- res$data$id_cols$protein %||% "protein_id"
+    id_gene_col <- res$data$id_cols$gene %||% "gene_symbol"
+
+    message(sprintf("[DEBUG] ids_df is NULL: %s, id_protein_col: %s, id_gene_col: %s",
+                    is.null(ids_df), id_protein_col, id_gene_col))
+
+    parent_dir <- tb_norm(node$node_dir[[1]])
+    message(sprintf("[DEBUG] parent_dir: %s", parent_dir))
+
+    # Process each cluster
+    n_created <- 0
+    for (i in seq_len(k)) {
+      message(sprintf("[DEBUG] Processing cluster %d of %d", i, k))
+
+      cluster_genes <- cluster_info$cluster_genes[[i]]
+      if (length(cluster_genes) == 0) {
+        warning(sprintf("Cluster %d has no genes, skipping GO-ORA", i))
+        next
+      }
+
+      # Convert gene symbols to protein IDs for GO-ORA
+      query_proteins <- heatmap_cluster_to_goora_input(
+        cluster_genes, ids_df, id_protein_col, id_gene_col
+      )
+
+      if (length(query_proteins) == 0) {
+        warning(sprintf("Cluster %d: no proteins mapped, skipping GO-ORA", i))
+        next
+      }
+
+      # Build GO-ORA payload
+      goora_payload <- list(
+        ok = TRUE,
+        query_proteins = query_proteins,
+        terpbase = terp
+      )
+
+      goora_params <- list(
+        fdr_cutoff = 0.05,
+        min_term_size = 5,
+        max_term_size = 500
+      )
+
+      # Run GO-ORA
+      goora_results <- tryCatch({
+        stats_goora_run(goora_payload, goora_params)
+      }, error = function(e) {
+        warning(sprintf("Cluster %d GO-ORA failed: %s", i, e$message))
+        NULL
+      })
+
+      if (is.null(goora_results)) next
+
+      # Add cluster info to results
+      goora_results$cluster_info <- list(
+        cluster_number = i,
+        cluster_genes = cluster_genes,
+        n_genes = length(cluster_genes),
+        dendro_type = pending$dendro_type,
+        parent_engine = eng
+      )
+
+      # Create child view
+      view_id <- sprintf("cluster_%d_goora", i)
+      label <- sprintf("Cluster %d GO-ORA (%d genes)", i, length(cluster_genes))
+
+      view_dir <- tryCatch({
+        tb_create_child_view(
+          parent_dir = parent_dir,
+          view_id = view_id,
+          engine_id = "goora",
+          label = label,
+          params = goora_params
+        )
+      }, error = function(e) {
+        warning(sprintf("Failed to create view for cluster %d: %s", i, e$message))
+        NULL
+      })
+
+      if (is.null(view_dir)) next
+
+      # Save results
+      tryCatch({
+        tb_save_child_results(view_dir, goora_results)
+        n_created <- n_created + 1
+      }, error = function(e) {
+        warning(sprintf("Failed to save results for cluster %d: %s", i, e$message))
+      })
+    }
+
+    n_created
+  }
+
+  # Load default terpbase button handler
+  observeEvent(input$res_cluster_terpbase_default_load, {
+    path <- input$res_cluster_terpbase_default_path
+    if (is.null(path) || !nzchar(path)) {
+      showNotification("Please select a default TerpBase first", type = "warning")
+      return()
+    }
+
+    if (!file.exists(path)) {
+      showNotification("Selected TerpBase file not found", type = "error")
+      return()
+    }
+
+    tryCatch({
+      terp <- terpbase_load(path)
+      terp <- res_prepare_terpbase(terp)
+      if (is.null(terp)) {
+        showNotification("Invalid TerpBase file: missing GO annotation data", type = "error")
+        return()
+      }
+      rv$terpbase <- terp
+      showNotification(sprintf("Loaded: %s", basename(path)), type = "message", duration = 2)
+    }, error = function(e) {
+      showNotification(paste("Failed to load TerpBase:", conditionMessage(e)), type = "error")
+    })
+  }, ignoreInit = TRUE)
+
+  # Handle terpbase file load from modal and continue GO-ORA
+  observeEvent(input$res_cluster_terpbase_load, {
+    pending <- rv$pending_cluster_goora
+    if (is.null(pending)) {
+      showNotification("No pending GO-ORA analysis", type = "error")
+      removeModal()
+      return()
+    }
+
+    # Determine which terpbase source to use
+    terp <- NULL
+    source_name <- NULL
+
+    # Priority: uploaded file > default selection > already loaded
+    f <- input$res_cluster_terpbase_file
+    default_path <- input$res_cluster_terpbase_default_path
+
+    if (!is.null(f) && !is.null(f$datapath) && nzchar(f$datapath)) {
+      # Use uploaded file
+      tryCatch({
+        terp <- terpbase_load(f$datapath)
+        source_name <- f$name
+      }, error = function(e) {
+        showNotification(paste("Failed to load file:", conditionMessage(e)), type = "error")
+        return()
+      })
+    } else if (!is.null(default_path) && nzchar(default_path) && file.exists(default_path)) {
+      # Use default selection
+      tryCatch({
+        terp <- terpbase_load(default_path)
+        source_name <- basename(default_path)
+      }, error = function(e) {
+        showNotification(paste("Failed to load default:", conditionMessage(e)), type = "error")
+        return()
+      })
+    }
+
+    if (is.null(terp)) {
+      showNotification("Please select a TerpBase file or load a default first", type = "warning")
+      return()
+    }
+
+    # Prepare terpbase (build mappings)
+    terp <- res_prepare_terpbase(terp)
+    if (is.null(terp)) {
+      showNotification("Invalid TerpBase file: missing GO annotation data", type = "error")
+      return()
+    }
+
+    # Save to app state
+    rv$terpbase <- terp
+    message("[DEBUG] Terpbase saved to rv$terpbase")
+
+    # Close the terpbase selection modal
+    removeModal()
+    message("[DEBUG] Modal removed, about to call res_run_cluster_goora")
+
+    # Run GO-ORA synchronously
+    tryCatch({
+      message("[DEBUG] Inside tryCatch, calling res_run_cluster_goora")
+      n_created <- res_run_cluster_goora(terp, pending)
+      message(sprintf("[DEBUG] res_run_cluster_goora returned: %d", n_created))
+
+      # Clear state
+      rv$pending_cluster_goora <- NULL
+
+      if (n_created > 0) {
+        rv$nodes_df <- tb_build_nodes_df(rv$run_root, rv$manifest)
+        showNotification(
+          sprintf("Created %d cluster GO-ORA results", n_created),
+          type = "message",
+          duration = 5
+        )
+      } else {
+        showNotification("No cluster GO-ORA results were created", type = "warning")
+      }
+    }, error = function(e) {
+      showNotification(paste("GO-ORA failed:", conditionMessage(e)), type = "error")
+    })
   }, ignoreInit = TRUE)
 
   # Helper function to apply table filters for GO engines

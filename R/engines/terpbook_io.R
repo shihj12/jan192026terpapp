@@ -661,3 +661,70 @@ tb_effective_render_state <- function(nodes_df, node_id, use_cache = TRUE) {
   if (isTRUE(use_cache)) .tb_cache$effective[[cache_key]] <- state
   state
 }
+
+# ---- Child View Creation (for cluster GO-ORA, etc.) -------------------------
+
+#' Create a child view directory under a parent step
+#'
+#' @param parent_dir Parent node directory (step or view)
+#' @param view_id Unique ID for the child view (e.g., "cluster_1_goora")
+#' @param engine_id Engine type for the child (e.g., "goora")
+#' @param label Display label for the child
+#' @param params Engine parameters list
+#' @param style Style defaults list (optional)
+#' @return Path to created view directory
+tb_create_child_view <- function(parent_dir, view_id, engine_id, label, params, style = list()) {
+  tb_require_jsonlite()
+
+  parent_dir <- tb_norm(parent_dir)
+  if (!dir.exists(parent_dir)) {
+    stop("Parent directory does not exist: ", parent_dir)
+  }
+
+  views_dir <- file.path(parent_dir, "views")
+  dir.create(views_dir, showWarnings = FALSE, recursive = TRUE)
+
+  view_dir <- file.path(views_dir, view_id)
+  dir.create(view_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Build view descriptor
+  view_desc <- list(
+    view_id = view_id,
+    engine_id = engine_id,
+    label = label,
+    params = params,
+    style = style
+  )
+
+  # Write view.json
+  view_json_path <- file.path(view_dir, "view.json")
+  jsonlite::write_json(
+    tb_json_safe(view_desc),
+    view_json_path,
+    auto_unbox = TRUE,
+    pretty = TRUE,
+    null = "null"
+  )
+
+  tb_norm(view_dir)
+}
+
+#' Save results to a child view directory
+#'
+#' @param view_dir Child view directory
+#' @param results Engine results list
+#' @return TRUE on success
+tb_save_child_results <- function(view_dir, results) {
+  view_dir <- tb_norm(view_dir)
+  if (!dir.exists(view_dir)) {
+    stop("View directory does not exist: ", view_dir)
+  }
+
+  results_path <- file.path(view_dir, "results.rds")
+  saveRDS(results, results_path)
+
+  # Invalidate cache for this node
+  tb_cache_invalidate_node(view_dir)
+
+  TRUE
+}

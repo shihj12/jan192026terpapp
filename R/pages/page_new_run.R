@@ -227,6 +227,10 @@ page_new_run_ui <- function() {
           padding-bottom: 16px;
           border-bottom: 1px solid var(--md-border);
         }
+        /* Prevent bouncing from terpbase conditional panel height changes */
+        .nr-terpbase-conditional-wrapper {
+          min-height: 70px;
+        }
         .nr-queue-list {
           margin-top: 16px;
         }
@@ -582,17 +586,19 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
             selected = "default",
             inline = TRUE
           ),
-          conditionalPanel(
-            "input.nr_terpbase_mode == 'default'",
-            textInput(
-              "nr_terpbase_default_path",
-              label = NULL,
-              value = "terpbase/Jan2026UniprotHuman.terpbase"
+          div(class = "nr-terpbase-conditional-wrapper",
+            conditionalPanel(
+              "input.nr_terpbase_mode == 'default'",
+              textInput(
+                "nr_terpbase_default_path",
+                label = NULL,
+                value = "terpbase/Jan2026UniprotHuman.terpbase"
+              )
+            ),
+            conditionalPanel(
+              "input.nr_terpbase_mode == 'upload'",
+              fileInput("nr_terpbase_upload", label = NULL, accept = c(".terpbase", ".rds"))
             )
-          ),
-          conditionalPanel(
-            "input.nr_terpbase_mode == 'upload'",
-            fileInput("nr_terpbase_upload", label = NULL, accept = c(".terpbase", ".rds"))
           ),
           uiOutput("nr_light_terpbase")
       ),
@@ -1763,10 +1769,14 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
       # Update item status
       if (isTRUE(result$ok)) {
         rv$queue_items[[idx]]$status <- "done"
-        if (!is.null(result$run_root)) {
-          rv$queue_items[[idx]]$run_root <- nr_norm(result$run_root)
+        # Use result$run_root if available, otherwise keep the pre-set run_root
+        final_run_root <- if (!is.null(result$run_root)) {
+          nr_norm(result$run_root)
+        } else {
+          rv$queue_items[[idx]]$run_root  # Keep existing
         }
-        ui_log(sprintf("Item %d complete: %s", idx, item$name))
+        rv$queue_items[[idx]]$run_root <- final_run_root
+        ui_log(sprintf("Item %d complete: %s (output: %s)", idx, item$name, final_run_root %||% "unknown"))
       } else {
         rv$queue_items[[idx]]$status <- "error"
         rv$queue_items[[idx]]$error <- result$error %||% "Unknown error"
@@ -1813,15 +1823,34 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
     },
     content = function(file) {
       # Collect all successful terpbooks
+      # Note: isolate() ensures we get current values in non-reactive context
+      items <- isolate(rv$queue_items)
       terpbooks <- list()
-      for (item in rv$queue_items) {
-        if (identical(item$status, "done") && !is.null(item$run_root) && dir.exists(item$run_root)) {
-          terpbooks[[item$name]] <- item$run_root
+      skipped_items <- character()
+      for (item in items) {
+        if (identical(item$status, "done")) {
+          if (is.null(item$run_root)) {
+            skipped_items <- c(skipped_items, sprintf("%s: run_root is NULL", item$name))
+          } else if (!dir.exists(item$run_root)) {
+            skipped_items <- c(skipped_items, sprintf("%s: dir not found at %s", item$name, item$run_root))
+          } else {
+            # Check if directory has content (manifest.json indicates a complete terpbook)
+            manifest_path <- file.path(item$run_root, "manifest.json")
+            if (!file.exists(manifest_path)) {
+              skipped_items <- c(skipped_items, sprintf("%s: dir exists but no manifest.json at %s", item$name, item$run_root))
+            } else {
+              terpbooks[[item$name]] <- item$run_root
+            }
+          }
         }
       }
 
       if (length(terpbooks) == 0) {
-        stop("No completed runs to download")
+        msg <- "No completed runs to download"
+        if (length(skipped_items) > 0) {
+          msg <- paste(msg, "Skipped:", paste(skipped_items, collapse = "; "))
+        }
+        stop(msg)
       }
 
       # Create combined zip directory
@@ -1835,11 +1864,16 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
         file.copy(src, dest, recursive = TRUE)
       }
 
-      # Add queue summary CSV
+      # Add queue summary CSV with run_root info for debugging
       summary_df <- data.frame(
-        Name = vapply(rv$queue_items, function(x) x$name %||% "", character(1)),
-        Status = vapply(rv$queue_items, function(x) x$status %||% "", character(1)),
-        Error = vapply(rv$queue_items, function(x) x$error %||% "", character(1)),
+        Name = vapply(items, function(x) x$name %||% "", character(1)),
+        Status = vapply(items, function(x) x$status %||% "", character(1)),
+        Error = vapply(items, function(x) x$error %||% "", character(1)),
+        RunRoot = vapply(items, function(x) x$run_root %||% "(not set)", character(1)),
+        RunRootExists = vapply(items, function(x) {
+          if (is.null(x$run_root)) return("N/A")
+          if (dir.exists(x$run_root)) "YES" else "NO"
+        }, character(1)),
         stringsAsFactors = FALSE
       )
       write.csv(summary_df, file.path(temp_zip_dir, "queue_summary.csv"), row.names = FALSE)

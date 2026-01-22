@@ -134,12 +134,18 @@ stats_heatmap_run <- function(payload, params = NULL, context = NULL) {
     clust_rows <- which(rowSums(!is.na(m)) >= 2)
     if (length(clust_rows) < 2) return(NULL)
 
-    cmat <- suppressWarnings(stats::cor(t(m[clust_rows, , drop = FALSE]), use = "pairwise.complete.obs"))
+    m_sub <- m[clust_rows, , drop = FALSE]
+    cmat <- suppressWarnings(stats::cor(t(m_sub), use = "pairwise.complete.obs"))
     cmat[is.na(cmat)] <- 0
     diag(cmat) <- 1
 
     d <- stats::as.dist(1 - cmat)
-    stats::hclust(d, method = "average")
+    hc <- stats::hclust(d, method = "average")
+    # Ensure labels are set from row names
+    if (is.null(hc$labels) && !is.null(rownames(m_sub))) {
+      hc$labels <- rownames(m_sub)
+    }
+    hc
   }
 
   compute_abund_dendro <- function(m) {
@@ -148,8 +154,14 @@ stats_heatmap_run <- function(payload, params = NULL, context = NULL) {
     clust_rows <- which(rowSums(is.na(m)) == 0)
     if (length(clust_rows) < 2) return(NULL)
 
-    d <- stats::dist(m[clust_rows, , drop = FALSE])
-    stats::hclust(d, method = "ward.D2")
+    m_sub <- m[clust_rows, , drop = FALSE]
+    d <- stats::dist(m_sub)
+    hc <- stats::hclust(d, method = "ward.D2")
+    # Ensure labels are set from row names
+    if (is.null(hc$labels) && !is.null(rownames(m_sub))) {
+      hc$labels <- rownames(m_sub)
+    }
+    hc
   }
 
   dendro_zscore <- compute_z_dendro(mat_zscore)
@@ -202,7 +214,12 @@ stats_heatmap_run <- function(payload, params = NULL, context = NULL) {
       group_annotations = group_annotations,
       group_colors = group_colors,
       matched_genes = matched_genes,
-      unmatched_genes = unmatched_genes
+      unmatched_genes = unmatched_genes,
+      ids = ids,
+      id_cols = list(
+        protein = as.character(payload$metadata$id_protein_col %||% "protein_id"),
+        gene = id_gene_col
+      )
     )
   )
 }

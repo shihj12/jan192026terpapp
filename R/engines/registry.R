@@ -1394,6 +1394,18 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
           msterp_schema_field(
             "height", "num", "Plot height (in)",
             default = 8, min = 2, max = 24, advanced = TRUE
+          ),
+          msterp_schema_field(
+            "cluster_k", "int", "Cluster preview (k)",
+            default = 2, min = 2, max = 20,
+            help = "Number of clusters to show.",
+            hidden = TRUE  # Controlled by cluster analysis panel
+          ),
+          msterp_schema_field(
+            "show_cluster_colors", "bool", "Show cluster colors",
+            default = FALSE,
+            help = "Show cluster membership color bar on left side of heatmap.",
+            hidden = TRUE  # Controlled by cluster analysis panel
           )
         )
       ),
@@ -1496,6 +1508,18 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
         msterp_schema_field(
           "height", "num", "Plot height (in)",
           default = 15, min = 2, max = 24, advanced = TRUE
+        ),
+        msterp_schema_field(
+          "cluster_k", "int", "Cluster preview (k)",
+          default = 2, min = 2, max = 20,
+          help = "Number of clusters to show.",
+          hidden = TRUE  # Controlled by cluster analysis panel
+        ),
+        msterp_schema_field(
+          "show_cluster_colors", "bool", "Show cluster colors",
+          default = FALSE,
+          help = "Show cluster membership color bar on left side of heatmap.",
+          hidden = TRUE  # Controlled by cluster analysis panel
         )
       ),
       outputs = list(figures = c("heatmap"), tables = c("heatmap_data", "stats_table"), interactive = FALSE),

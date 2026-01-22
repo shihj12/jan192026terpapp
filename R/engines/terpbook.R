@@ -6109,10 +6109,12 @@ tb_render_heatmap <- function(results, style, context = NULL) {
   }
 
   exclude_na_rows <- isTRUE(style$exclude_na_rows %||% params$exclude_na_rows %||% FALSE)
+  na_row_mask <- NULL  # Track which rows are kept for cluster mapping
   if (exclude_na_rows) {
     keep <- stats::complete.cases(mat)
+    na_row_mask <- keep  # Save for cluster color mapping
     mat <- mat[keep, , drop = FALSE]
-    dendro <- NULL
+    # Don't null the dendro - we'll use it for cluster colors with the mask
   }
 
   # Check again after NA filtering in case all rows were removed
@@ -6319,6 +6321,125 @@ tb_render_heatmap <- function(results, style, context = NULL) {
     }, error = function(e) {
       # If gtable manipulation fails, silently continue without the bottom bar
       # The heatmap will still render, just without the custom color bar
+    })
+  }
+
+  # Add cluster membership color bar on the LEFT side if cluster_k >= 2
+  cluster_k <- suppressWarnings(as.integer(style$cluster_k %||% 0))
+  show_clusters <- isTRUE(style$show_cluster_colors %||% FALSE)
+
+  # Debug: log cluster settings
+  message(sprintf("[Heatmap] Cluster settings: k=%s, show=%s, gtable=%s",
+                  cluster_k, show_clusters, !is.null(hm$gtable)))
+
+  if (!is.na(cluster_k) && cluster_k >= 2 && show_clusters && !is.null(hm$gtable)) {
+    tryCatch({
+      tb_require_pkg("grid")
+      tb_require_pkg("gtable")
+
+      gt <- hm$gtable
+      n_display_rows <- nrow(mat)  # Rows actually displayed (after NA filtering)
+
+      # Use pheatmap's tree_row if available - this matches the visual row order exactly
+      # Otherwise fall back to the pre-computed dendrogram from data
+      cluster_dendro <- NULL
+      if (!is.null(hm$tree_row) && inherits(hm$tree_row, "hclust")) {
+        cluster_dendro <- hm$tree_row
+      } else if (!is.null(dendro) && inherits(dendro, "hclust")) {
+        cluster_dendro <- dendro
+      }
+
+      # If no dendrogram, we can't do clustering
+      if (is.null(cluster_dendro)) {
+        stop("No dendrogram available for cluster cutting")
+      }
+
+      # Cut dendrogram into clusters
+      # cutree returns a named vector where names are the original labels
+      # and values are cluster assignments (1 to k)
+      all_clusters <- stats::cutree(cluster_dendro, k = cluster_k)
+
+      # Get row order from dendrogram - this is the visual order in the heatmap
+      # dendro$order[1] is the index of the row that appears at the TOP of the heatmap
+      row_order <- cluster_dendro$order
+
+      # The clusters need to be in visual order (top to bottom of heatmap)
+      # row_order gives us which original row index is at each visual position
+      ordered_clusters <- all_clusters[row_order]
+
+      # Ensure we have the right number of cluster assignments
+      if (length(ordered_clusters) != n_display_rows) {
+        # If mismatch, try to map by row names
+        display_names <- rownames(mat)
+        dendro_labels <- cluster_dendro$labels
+        if (!is.null(display_names) && !is.null(dendro_labels) && length(dendro_labels) == length(all_clusters)) {
+          # Find which dendro labels match our displayed rows
+          match_idx <- match(display_names, dendro_labels)
+          if (!any(is.na(match_idx))) {
+            # Get clusters for matched rows, but we need visual order
+            # pheatmap reorders rows according to the dendrogram
+            # So the visual order is: row_order applied to the matched indices
+            ordered_clusters <- all_clusters[row_order]
+            ordered_clusters <- ordered_clusters[seq_len(n_display_rows)]
+          } else {
+            stop(sprintf("Cannot map %d dendro items to %d display rows", length(all_clusters), n_display_rows))
+          }
+        } else {
+          stop(sprintf("Cluster count mismatch: %d vs %d rows", length(ordered_clusters), n_display_rows))
+        }
+      }
+
+      # Generate distinct colors for clusters
+      cluster_colors <- grDevices::hcl.colors(cluster_k, palette = "Set2")
+      row_colors <- cluster_colors[ordered_clusters]
+
+      # Create the color bar grob - one rectangle per row
+      bar_width <- grid::unit(12, "pt")
+
+      rect_grobs <- lapply(seq_len(n_display_rows), function(i) {
+        # Rows go from top to bottom in pheatmap, so invert y position
+        y_pos <- (n_display_rows - i + 0.5) / n_display_rows
+        grid::rectGrob(
+          x = grid::unit(0.5, "npc"),
+          y = grid::unit(y_pos, "npc"),
+          width = grid::unit(1, "npc"),
+          height = grid::unit(1 / n_display_rows, "npc"),
+          gp = grid::gpar(fill = row_colors[i], col = NA),
+          name = paste0("cluster_rect_", i)
+        )
+      })
+
+      # Combine into a gTree
+      cluster_bar_grob <- grid::gTree(
+        children = do.call(grid::gList, rect_grobs),
+        name = "cluster_colorbar"
+      )
+
+      # Find the matrix grob position in the gtable
+      matrix_idx <- which(gt$layout$name == "matrix")
+      if (length(matrix_idx) > 0) {
+        matrix_col <- gt$layout$l[matrix_idx]
+        matrix_t <- gt$layout$t[matrix_idx]
+        matrix_b <- gt$layout$b[matrix_idx]
+
+        # Add a new column to the LEFT of the matrix for the cluster bar
+        gt <- gtable::gtable_add_cols(gt, widths = bar_width, pos = matrix_col - 1)
+
+        # Add the cluster bar grob to this new column
+        gt <- gtable::gtable_add_grob(
+          gt,
+          grobs = cluster_bar_grob,
+          t = matrix_t,
+          b = matrix_b,
+          l = matrix_col,
+          name = "cluster_colorbar"
+        )
+
+        hm$gtable <- gt
+      }
+    }, error = function(e) {
+      # Log error for debugging but continue without the cluster bar
+      message("[Heatmap] Cluster color bar error: ", conditionMessage(e))
     })
   }
 
