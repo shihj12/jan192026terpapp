@@ -7450,6 +7450,7 @@ page_results_server <- function(input, output, session) {
     )
 
     if (!has_go_data) {
+      message("[DEBUG] No GO data available, storing pending state and showing modal")
       # Store pending analysis state so we can continue after terpbase is loaded
       rv$pending_cluster_goora <- list(
         cluster_info = cluster_info,
@@ -7459,7 +7460,9 @@ page_results_server <- function(input, output, session) {
         dendro_type = dendro_type,
         k = k
       )
+      message("[DEBUG] pending_cluster_goora stored with k =", k)
       # Show modal to let user upload terpbase
+      message("[DEBUG] About to call showModal")
       showModal(modalDialog(
         title = "GO Annotations Required",
         tags$div(
@@ -7496,6 +7499,7 @@ page_results_server <- function(input, output, session) {
         ),
         easyClose = TRUE
       ))
+      message("[DEBUG] showModal returned, returning from observer")
       return()
     }
 
@@ -7626,11 +7630,16 @@ page_results_server <- function(input, output, session) {
 
   # Status display for terpbase file upload in modal
   output$res_cluster_terpbase_status <- renderUI({
+    message("[DEBUG] res_cluster_terpbase_status renderUI executing")
     f <- input$res_cluster_terpbase_file
     default_path <- input$res_cluster_terpbase_default_path
+    message(sprintf("[DEBUG] status renderUI - file: %s, default_path: %s",
+                    if (!is.null(f)) f$name else "NULL",
+                    default_path %||% "NULL"))
 
     # Check if default is selected
     if (!is.null(default_path) && nzchar(default_path) && file.exists(default_path)) {
+      message("[DEBUG] status renderUI - showing 'Default ready'")
       return(tags$div(
         style = "color: #28a745; margin-top: 8px;",
         icon("check-circle"),
@@ -7640,6 +7649,7 @@ page_results_server <- function(input, output, session) {
 
     # Check if file is uploaded
     if (!is.null(f) && !is.null(f$datapath) && nzchar(f$datapath)) {
+      message("[DEBUG] status renderUI - showing 'File ready'")
       return(tags$div(
         style = "color: #28a745; margin-top: 8px;",
         icon("check-circle"),
@@ -7647,6 +7657,7 @@ page_results_server <- function(input, output, session) {
       ))
     }
 
+    message("[DEBUG] status renderUI - showing 'Select a TerpBase'")
     tags$div(class = "text-muted", style = "margin-top: 8px;", "Select a TerpBase to continue")
   })
 
@@ -7796,7 +7807,9 @@ page_results_server <- function(input, output, session) {
 
   # Load default terpbase button handler
   observeEvent(input$res_cluster_terpbase_default_load, {
+    message("[DEBUG] res_cluster_terpbase_default_load button clicked!")
     path <- input$res_cluster_terpbase_default_path
+    message(sprintf("[DEBUG] default_path: %s", path %||% "NULL"))
     if (is.null(path) || !nzchar(path)) {
       showNotification("Please select a default TerpBase first", type = "warning")
       return()
@@ -7823,7 +7836,11 @@ page_results_server <- function(input, output, session) {
 
   # Handle terpbase file load from modal and continue GO-ORA
   observeEvent(input$res_cluster_terpbase_load, {
+    message("[DEBUG] res_cluster_terpbase_load button clicked!")
+
     pending <- rv$pending_cluster_goora
+    message(sprintf("[DEBUG] pending is NULL: %s", is.null(pending)))
+
     if (is.null(pending)) {
       showNotification("No pending GO-ORA analysis", type = "error")
       removeModal()
@@ -7833,35 +7850,57 @@ page_results_server <- function(input, output, session) {
     # Determine which terpbase source to use
     terp <- NULL
     source_name <- NULL
+    load_error <- NULL
 
     # Priority: uploaded file > default selection > already loaded
     f <- input$res_cluster_terpbase_file
     default_path <- input$res_cluster_terpbase_default_path
 
+    message(sprintf("[DEBUG] file input: %s, default_path: %s",
+                    if (!is.null(f)) f$name else "NULL",
+                    default_path %||% "NULL"))
+
     if (!is.null(f) && !is.null(f$datapath) && nzchar(f$datapath)) {
       # Use uploaded file
-      tryCatch({
-        terp <- terpbase_load(f$datapath)
-        source_name <- f$name
+      message("[DEBUG] Loading from uploaded file")
+      result <- tryCatch({
+        list(terp = terpbase_load(f$datapath), name = f$name, error = NULL)
       }, error = function(e) {
-        showNotification(paste("Failed to load file:", conditionMessage(e)), type = "error")
-        return()
+        list(terp = NULL, name = NULL, error = conditionMessage(e))
       })
+      terp <- result$terp
+      source_name <- result$name
+      load_error <- result$error
+      if (!is.null(load_error)) {
+        message(sprintf("[DEBUG] File load error: %s", load_error))
+        showNotification(paste("Failed to load file:", load_error), type = "error")
+      }
     } else if (!is.null(default_path) && nzchar(default_path) && file.exists(default_path)) {
       # Use default selection
-      tryCatch({
-        terp <- terpbase_load(default_path)
-        source_name <- basename(default_path)
+      message("[DEBUG] Loading from default path")
+      result <- tryCatch({
+        list(terp = terpbase_load(default_path), name = basename(default_path), error = NULL)
       }, error = function(e) {
-        showNotification(paste("Failed to load default:", conditionMessage(e)), type = "error")
-        return()
+        list(terp = NULL, name = NULL, error = conditionMessage(e))
       })
+      terp <- result$terp
+      source_name <- result$name
+      load_error <- result$error
+      if (!is.null(load_error)) {
+        message(sprintf("[DEBUG] Default load error: %s", load_error))
+        showNotification(paste("Failed to load default:", load_error), type = "error")
+      }
+    } else {
+      message("[DEBUG] No file or default path selected")
     }
 
     if (is.null(terp)) {
+      message("[DEBUG] terp is NULL after loading attempts")
       showNotification("Please select a TerpBase file or load a default first", type = "warning")
       return()
     }
+
+    message(sprintf("[DEBUG] Successfully loaded terpbase from: %s", source_name %||% "unknown"))
 
     # Prepare terpbase (build mappings)
     terp <- res_prepare_terpbase(terp)
