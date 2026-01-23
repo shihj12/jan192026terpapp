@@ -2717,6 +2717,7 @@ page_results_server <- function(input, output, session) {
       rv$manifest <- man$manifest
       rv$nodes_df <- nodes
       rv$load_warnings <- man$warnings %||% character()
+      rv$pending_cluster_goora <- NULL  # Clear any pending state from previous terpbook
 
       # Store the original terpbook filename (as saved in Windows)
       rv$terpbook_filename <- f$name %||% basename(f$datapath) %||% "Unknown"
@@ -4392,77 +4393,8 @@ page_results_server <- function(input, output, session) {
       )
     }
 
-    # Build table filter controls for GO engines (goora, 1dgofcs, 2dgofcs)
+    # Table filters removed - use column sorting instead
     table_filter_ui <- NULL
-    if (eng_lower %in% c("goora", "1dgofcs", "2dgofcs")) {
-      filter_fields <- tagList(
-        # Fold enrichment filter (GO-ORA only)
-        if (eng_lower == "goora") {
-          numericInput(
-            "res_filter_fold_enrichment_min",
-            "Min fold enrichment",
-            value = NA,
-            min = 0,
-            step = 0.1
-          )
-        },
-        # Score X filter (2D GO-FCS only)
-        if (eng_lower == "2dgofcs") {
-          numericInput(
-            "res_filter_score_x_min",
-            "Min score X",
-            value = NA,
-            step = 0.1
-          )
-        },
-        # Score Y filter (2D GO-FCS only)
-        if (eng_lower == "2dgofcs") {
-          numericInput(
-            "res_filter_score_y_min",
-            "Min score Y",
-            value = NA,
-            step = 0.1
-          )
-        },
-        # Score filter (1D GO-FCS only)
-        if (eng_lower == "1dgofcs") {
-          numericInput(
-            "res_filter_score_min",
-            "Min score",
-            value = NA,
-            step = 0.1
-          )
-        },
-        # Common filters for all GO engines
-        numericInput(
-          "res_filter_n_genes_min",
-          "Min # genes",
-          value = NA,
-          min = 1,
-          step = 1
-        ),
-        numericInput(
-          "res_filter_fdr_max",
-          "Max FDR",
-          value = NA,
-          min = 0,
-          max = 1,
-          step = 0.001
-        ),
-        actionButton(
-          "res_filter_clear",
-          "Clear Filters",
-          class = "btn btn-default btn-sm",
-          style = "margin-top: 8px;"
-        )
-      )
-      table_filter_ui <- res_collapse_section_ui(
-        id = "style_section_table_filters",
-        title = "Table Filters",
-        open = FALSE,
-        filter_fields
-      )
-    }
 
     # Build cluster analysis panel for heatmap engines
     # Uses existing color_mode selector to determine which dendrogram to cut
@@ -4664,6 +4596,7 @@ page_results_server <- function(input, output, session) {
     rv$nav_obs <- list()
     rv$last_sparse_by_node <- list()
     rv$loaded <- FALSE
+    rv$pending_cluster_goora <- NULL  # Clear any pending cluster GO-ORA state
   }, ignoreInit = TRUE)
 
   # ---- Commit triggers for deferred pending changes -------------------------
@@ -7219,16 +7152,6 @@ page_results_server <- function(input, output, session) {
       showNotification(paste("Category", action, ":", bin_name), type = "message")
     }, ignoreInit = TRUE)
 
-  # Clear filter button handler for GO engines
-  observeEvent(input$res_filter_clear, {
-    updateNumericInput(session, "res_filter_fold_enrichment_min", value = NA)
-    updateNumericInput(session, "res_filter_score_min", value = NA)
-    updateNumericInput(session, "res_filter_score_x_min", value = NA)
-    updateNumericInput(session, "res_filter_score_y_min", value = NA)
-    updateNumericInput(session, "res_filter_n_genes_min", value = NA)
-    updateNumericInput(session, "res_filter_fdr_max", value = NA)
-  }, ignoreInit = TRUE)
-
   # ---- Cluster Analysis for Heatmap Engines ----------------------------------
 
   # Helper to get current dendrogram type from color_mode style setting
@@ -7417,6 +7340,10 @@ page_results_server <- function(input, output, session) {
       showNotification("No active node", type = "error")
       return()
     }
+    message(sprintf("[DEBUG] active_node_row: node_id=%s, node_dir=%s, engine_id=%s",
+                    node$node_id[[1]] %||% "NA",
+                    node$node_dir[[1]] %||% "NA",
+                    node$engine_id[[1]] %||% "NA"))
 
     # Get cluster parameters from slider
     k <- input$res_cluster_k %||% 0
@@ -7449,184 +7376,111 @@ page_results_server <- function(input, output, session) {
       (!is.null(terpbase$annot_long) && "gene" %in% names(terpbase$annot_long) && "ID" %in% names(terpbase$annot_long))
     )
 
-    if (!has_go_data) {
-      message("[DEBUG] No GO data available, storing pending state and showing modal")
-      # Store pending analysis state so we can continue after terpbase is loaded
-      rv$pending_cluster_goora <- list(
-        cluster_info = cluster_info,
-        res = res,
-        node = node,
-        eng = eng,
-        dendro_type = dendro_type,
-        k = k
-      )
-      message("[DEBUG] pending_cluster_goora stored with k =", k)
-      # Show modal to let user upload terpbase
-      message("[DEBUG] About to call showModal")
-      showModal(modalDialog(
-        title = "GO Annotations Required",
-        tags$div(
-          id = "cluster_goora_modal_content",
-          tags$p("GO-ORA analysis requires a TerpBase file with GO annotations."),
-          tags$hr(),
-          tags$h5("Load from default library"),
-          selectInput(
-            "res_cluster_terpbase_default_path",
-            NULL,
-            choices = tools_default_terpbase_choices(),
-            selected = "",
-            width = "100%"
-          ),
-          actionButton(
-            "res_cluster_terpbase_default_load",
-            "Load default",
-            class = "btn btn-default btn-sm",
-            style = "margin-bottom: 12px;"
-          ),
-          tags$hr(),
-          tags$h5("Or upload a file"),
-          fileInput(
-            "res_cluster_terpbase_file",
-            NULL,
-            accept = c(".terpbase", ".rds"),
-            width = "100%"
-          ),
-          uiOutput("res_cluster_terpbase_status")
-        ),
-        footer = tagList(
-          actionButton("res_cluster_terpbase_load", "Load & Run GO-ORA", class = "btn-primary"),
-          modalButton("Cancel")
-        ),
-        easyClose = TRUE
-      ))
-      message("[DEBUG] showModal returned, returning from observer")
-      return()
-    }
+    # Always show modal so user can adjust GO-ORA parameters
+    message("[DEBUG] Storing pending state and showing modal")
+    # Store pending analysis state so we can continue after user confirms
+    rv$pending_cluster_goora <- list(
+      cluster_info = cluster_info,
+      res = res,
+      node = node,
+      eng = eng,
+      dendro_type = dendro_type,
+      k = k
+    )
+    message("[DEBUG] pending_cluster_goora stored with k =", k)
 
-    # Ensure terpbase has protein_to_go mapping (build from annot_long if needed)
-    if (is.null(terpbase$protein_to_go) && !is.null(terpbase$annot_long)) {
-      annot <- terpbase$annot_long
-      if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
-        genes <- unique(annot$gene)
-        protein_to_go <- lapply(genes, function(g) {
-          unique(annot$ID[annot$gene == g])
-        })
-        names(protein_to_go) <- genes
-        terpbase$protein_to_go <- protein_to_go
-      }
-    }
-
-    # Build go_terms from terms_by_id if missing
-    if (is.null(terpbase$go_terms) && !is.null(terpbase$terms_by_id)) {
-      terms <- terpbase$terms_by_id
-      if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
-        go_terms <- lapply(seq_len(nrow(terms)), function(i) {
-          list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
-        })
-        names(go_terms) <- terms$ID
-        terpbase$go_terms <- go_terms
-      }
-    }
-
-    # Get ID mapping from heatmap results data (not payload)
-    ids_df <- res$data$ids %||% NULL
-    id_protein_col <- res$data$id_cols$protein %||% "protein_id"
-    id_gene_col <- res$data$id_cols$gene %||% "gene_symbol"
-
-    parent_dir <- tb_norm(node$node_dir[[1]])
-    showNotification(sprintf("Running GO-ORA on %d clusters...", k), type = "message", duration = 3)
-
-    # Process each cluster
-    n_created <- 0
-    for (i in seq_len(k)) {
-      cluster_genes <- cluster_info$cluster_genes[[i]]
-      if (length(cluster_genes) == 0) {
-        warning(sprintf("Cluster %d has no genes, skipping GO-ORA", i))
-        next
-      }
-
-      # Convert gene symbols to protein IDs for GO-ORA
-      query_proteins <- heatmap_cluster_to_goora_input(
-        cluster_genes, ids_df, id_protein_col, id_gene_col
-      )
-
-      if (length(query_proteins) == 0) {
-        warning(sprintf("Cluster %d: no proteins mapped, skipping GO-ORA", i))
-        next
-      }
-
-      # Build GO-ORA payload
-      goora_payload <- list(
-        ok = TRUE,
-        query_proteins = query_proteins,
-        terpbase = terpbase
-      )
-
-      goora_params <- list(
-        fdr_cutoff = 0.05,
-        min_term_size = 5,
-        max_term_size = 500
-      )
-
-      # Run GO-ORA
-      goora_results <- tryCatch({
-        stats_goora_run(goora_payload, goora_params)
-      }, error = function(e) {
-        warning(sprintf("Cluster %d GO-ORA failed: %s", i, e$message))
-        NULL
-      })
-
-      if (is.null(goora_results)) next
-
-      # Add cluster info to results
-      goora_results$cluster_info <- list(
-        cluster_number = i,
-        cluster_genes = cluster_genes,
-        n_genes = length(cluster_genes),
-        dendro_type = dendro_type,
-        parent_engine = eng
-      )
-
-      # Create child view
-      view_id <- sprintf("cluster_%d_goora", i)
-      label <- sprintf("Cluster %d GO-ORA (%d genes)", i, length(cluster_genes))
-
-      view_dir <- tryCatch({
-        tb_create_child_view(
-          parent_dir = parent_dir,
-          view_id = view_id,
-          engine_id = "goora",
-          label = label,
-          params = goora_params
-        )
-      }, error = function(e) {
-        warning(sprintf("Failed to create view for cluster %d: %s", i, e$message))
-        NULL
-      })
-
-      if (is.null(view_dir)) next
-
-      # Save results
-      tryCatch({
-        tb_save_child_results(view_dir, goora_results)
-        n_created <- n_created + 1
-      }, error = function(e) {
-        warning(sprintf("Failed to save results for cluster %d: %s", i, e$message))
-      })
-    }
-
-    if (n_created > 0) {
-      # Refresh the tree to show new children
-      rv$nodes_df <- tb_build_nodes_df(rv$run_root, rv$manifest)
-      showNotification(
-        sprintf("Created %d cluster GO-ORA results", n_created),
-        type = "message",
-        duration = 5
+    # Build terpbase status message
+    terpbase_status_msg <- if (has_go_data) {
+      tags$div(
+        style = "color: #28a745; margin-bottom: 12px; padding: 8px; background: #d4edda; border-radius: 4px;",
+        icon("check-circle"),
+        " TerpBase already loaded. You can change it below or keep the current one."
       )
     } else {
-      showNotification("No cluster GO-ORA results were created", type = "warning")
+      tags$div(
+        style = "color: #856404; margin-bottom: 12px; padding: 8px; background: #fff3cd; border-radius: 4px;",
+        icon("exclamation-triangle"),
+        " No TerpBase loaded. Please select one below."
+      )
     }
+
+    # Show modal to let user configure parameters and optionally change terpbase
+    message("[DEBUG] About to call showModal")
+    showModal(modalDialog(
+      title = "Cluster GO-ORA Settings",
+      tags$div(
+        id = "cluster_goora_modal_content",
+        # Reset fileInput on modal open to prevent stale file references on rerun
+        tags$script(HTML("
+          setTimeout(function() {
+            Shiny.setInputValue('res_cluster_terpbase_file', null);
+            var fileInput = document.getElementById('res_cluster_terpbase_file');
+            if (fileInput) { fileInput.value = ''; }
+          }, 0);
+        ")),
+        terpbase_status_msg,
+        tags$hr(),
+        tags$h5("GO-ORA Parameters"),
+        fluidRow(
+          column(4,
+            numericInput(
+              "res_cluster_goora_fdr",
+              "FDR cutoff",
+              value = 0.05,
+              min = 0.001,
+              max = 1,
+              step = 0.01
+            )
+          ),
+          column(4,
+            numericInput(
+              "res_cluster_goora_min_overlap",
+              "Min overlap",
+              value = 3,
+              min = 1,
+              max = 50,
+              step = 1
+            )
+          ),
+          column(4,
+            numericInput(
+              "res_cluster_goora_min_term_size",
+              "Min term size",
+              value = 5,
+              min = 1,
+              max = 100,
+              step = 1
+            )
+          )
+        ),
+        tags$hr(),
+        tags$h5("Change TerpBase (optional)"),
+        tags$p(class = "text-muted", style = "font-size: 0.9em;", "Leave empty to use the currently loaded TerpBase."),
+        selectInput(
+          "res_cluster_terpbase_default_path",
+          "Load from default library",
+          choices = tools_default_terpbase_choices(),
+          selected = "",
+          width = "100%"
+        ),
+        fileInput(
+          "res_cluster_terpbase_file",
+          "Or upload a file",
+          accept = c(".terpbase", ".rds"),
+          width = "100%"
+        ),
+        uiOutput("res_cluster_terpbase_status")
+      ),
+      footer = tagList(
+        actionButton("res_cluster_terpbase_load", "Run GO-ORA", class = "btn-primary"),
+        modalButton("Cancel")
+      ),
+      easyClose = TRUE
+    ))
+    message("[DEBUG] showModal returned, returning from observer")
+    return()
   }, ignoreInit = TRUE)
+
 
   # Status display for terpbase file upload in modal
   output$res_cluster_terpbase_status <- renderUI({
@@ -7663,40 +7517,92 @@ page_results_server <- function(input, output, session) {
 
   # Helper function to prepare terpbase (build mappings if needed)
   res_prepare_terpbase <- function(terp) {
+    message("[DEBUG] res_prepare_terpbase called")
     if (is.null(terp)) return(NULL)
 
     # Check if terpbase has GO data
     has_go_data <- !is.null(terp$protein_to_go) ||
       (!is.null(terp$annot_long) && "gene" %in% names(terp$annot_long) && "ID" %in% names(terp$annot_long))
+    message(sprintf("[DEBUG] has_go_data: %s, has protein_to_go: %s", has_go_data, !is.null(terp$protein_to_go)))
 
     if (!has_go_data) return(NULL)
 
-    # Build protein_to_go from annot_long if needed
+    # Build protein_to_go from annot_long if needed (using fast split instead of lapply)
     if (is.null(terp$protein_to_go) && !is.null(terp$annot_long)) {
       annot <- terp$annot_long
       if ("gene" %in% names(annot) && "ID" %in% names(annot)) {
-        genes <- unique(annot$gene)
-        protein_to_go <- lapply(genes, function(g) {
-          unique(annot$ID[annot$gene == g])
-        })
-        names(protein_to_go) <- genes
+        message(sprintf("[DEBUG] Building protein_to_go using split() for %d rows...", nrow(annot)))
+        # Use split() which is much faster than lapply with repeated subsetting
+        protein_to_go <- split(annot$ID, annot$gene)
+        # Remove duplicates within each gene
+        protein_to_go <- lapply(protein_to_go, unique)
         terp$protein_to_go <- protein_to_go
+        message(sprintf("[DEBUG] protein_to_go built: %d genes", length(protein_to_go)))
       }
     }
 
-    # Build go_terms from terms_by_id if missing
+    # Build go_terms from terms_by_id if missing (using vectorized approach)
     if (is.null(terp$go_terms) && !is.null(terp$terms_by_id)) {
       terms <- terp$terms_by_id
       if (all(c("ID", "Description", "ONTOLOGY") %in% names(terms))) {
-        go_terms <- lapply(seq_len(nrow(terms)), function(i) {
-          list(name = terms$Description[i], ontology = terms$ONTOLOGY[i])
-        })
+        message(sprintf("[DEBUG] Building go_terms for %d terms...", nrow(terms)))
+        # Build list more efficiently using Map
+        go_terms <- Map(function(name, ont) list(name = name, ontology = ont),
+                        terms$Description, terms$ONTOLOGY)
         names(go_terms) <- terms$ID
         terp$go_terms <- go_terms
+        message("[DEBUG] go_terms built")
       }
     }
 
+    message("[DEBUG] res_prepare_terpbase returning")
     terp
+  }
+
+  # Helper function to clean up existing cluster GO-ORA views before creating new ones
+  res_cleanup_cluster_goora_views <- function(parent_dir) {
+    parent_dir <- tb_norm(parent_dir)
+    views_dir <- file.path(parent_dir, "views")
+
+    # Remove existing cluster_*_goora directories
+    if (dir.exists(views_dir)) {
+      existing_dirs <- list.dirs(views_dir, full.names = TRUE, recursive = FALSE)
+      cluster_dirs <- existing_dirs[grepl("cluster_\\d+_goora$", basename(existing_dirs))]
+      for (d in cluster_dirs) {
+        message(sprintf("[DEBUG] Removing old cluster view: %s", d))
+        unlink(d, recursive = TRUE)
+      }
+    }
+
+    # Update parent's step.json to remove cluster_*_goora view references
+    parent_step_json <- file.path(parent_dir, "step.json")
+    if (file.exists(parent_step_json)) {
+      parent_desc <- tryCatch(tb_read_json(parent_step_json), error = function(e) list())
+      if (!is.null(parent_desc$views) && length(parent_desc$views) > 0) {
+        existing_views <- tb_as_list_of_rows(parent_desc$views)
+        # Filter out cluster_*_goora views
+        filtered_views <- Filter(function(v) {
+          vid <- as.character((v %||% list())$view_id %||% (v %||% list())$id %||% "")
+          !grepl("^cluster_\\d+_goora$", vid)
+        }, existing_views)
+
+        if (length(filtered_views) != length(existing_views)) {
+          parent_desc$views <- filtered_views
+          jsonlite::write_json(
+            tb_json_safe(parent_desc),
+            parent_step_json,
+            auto_unbox = TRUE,
+            pretty = TRUE,
+            null = "null"
+          )
+          # Invalidate cache
+          cache_key <- paste0(parent_dir, "|step")
+          .tb_cache$descriptors[[cache_key]] <- NULL
+          message(sprintf("[DEBUG] Removed %d old cluster view references from step.json",
+                          length(existing_views) - length(filtered_views)))
+        }
+      }
+    }
   }
 
   # Helper function to run cluster GO-ORA analysis
@@ -7720,6 +7626,9 @@ page_results_server <- function(input, output, session) {
 
     parent_dir <- tb_norm(node$node_dir[[1]])
     message(sprintf("[DEBUG] parent_dir: %s", parent_dir))
+
+    # Clean up existing cluster GO-ORA views before creating new ones
+    res_cleanup_cluster_goora_views(parent_dir)
 
     # Process each cluster
     n_created <- 0
@@ -7750,8 +7659,9 @@ page_results_server <- function(input, output, session) {
       )
 
       goora_params <- list(
-        fdr_cutoff = 0.05,
-        min_term_size = 5,
+        fdr_cutoff = input$res_cluster_goora_fdr %||% 0.05,
+        min_term_size = input$res_cluster_goora_min_term_size %||% 5,
+        min_overlap = input$res_cluster_goora_min_overlap %||% 3,
         max_term_size = 500
       )
 
@@ -7777,6 +7687,24 @@ page_results_server <- function(input, output, session) {
       # Create child view
       view_id <- sprintf("cluster_%d_goora", i)
       label <- sprintf("Cluster %d GO-ORA (%d genes)", i, length(cluster_genes))
+      message(sprintf("[DEBUG] Creating child view: %s under parent: %s", view_id, parent_dir))
+
+      # Default style for GO-ORA views (matches registry defaults)
+      goora_style <- list(
+        plot_type = "bar",
+        color_mode = "fdr",
+        fdr_palette = "yellow_cap",
+        flat_color = "#B0B0B0",
+        alpha = 0.8,
+        show_go_id = FALSE,
+        font_size = 14,
+        axis_style = "clean",
+        axis_text_size = 20,
+        width = 8,
+        height = 6,
+        ontology_filter = "BP",
+        flip_axis = FALSE
+      )
 
       view_dir <- tryCatch({
         tb_create_child_view(
@@ -7784,24 +7712,31 @@ page_results_server <- function(input, output, session) {
           view_id = view_id,
           engine_id = "goora",
           label = label,
-          params = goora_params
+          params = goora_params,
+          style = goora_style
         )
       }, error = function(e) {
         warning(sprintf("Failed to create view for cluster %d: %s", i, e$message))
         NULL
       })
 
-      if (is.null(view_dir)) next
+      if (is.null(view_dir)) {
+        message(sprintf("[DEBUG] view_dir is NULL for cluster %d", i))
+        next
+      }
+      message(sprintf("[DEBUG] Child view created at: %s", view_dir))
 
       # Save results
       tryCatch({
         tb_save_child_results(view_dir, goora_results)
         n_created <- n_created + 1
+        message(sprintf("[DEBUG] Results saved for cluster %d, n_created now: %d", i, n_created))
       }, error = function(e) {
         warning(sprintf("Failed to save results for cluster %d: %s", i, e$message))
       })
     }
 
+    message(sprintf("[DEBUG] res_run_cluster_goora returning n_created: %d", n_created))
     n_created
   }
 
@@ -7891,7 +7826,13 @@ page_results_server <- function(input, output, session) {
         showNotification(paste("Failed to load default:", load_error), type = "error")
       }
     } else {
-      message("[DEBUG] No file or default path selected")
+      message("[DEBUG] No file or default path selected, checking for existing terpbase")
+      # Fall back to already loaded terpbase
+      if (!is.null(rv$terpbase)) {
+        terp <- rv$terpbase
+        source_name <- "already loaded"
+        message("[DEBUG] Using existing terpbase from rv$terpbase")
+      }
     }
 
     if (is.null(terp)) {
@@ -7900,7 +7841,7 @@ page_results_server <- function(input, output, session) {
       return()
     }
 
-    message(sprintf("[DEBUG] Successfully loaded terpbase from: %s", source_name %||% "unknown"))
+    message(sprintf("[DEBUG] Using terpbase from: %s", source_name %||% "unknown"))
 
     # Prepare terpbase (build mappings)
     terp <- res_prepare_terpbase(terp)
@@ -7917,6 +7858,15 @@ page_results_server <- function(input, output, session) {
     removeModal()
     message("[DEBUG] Modal removed, about to call res_run_cluster_goora")
 
+    # Show progress notification while GO-ORA is running
+    k <- pending$k %||% 0
+    progress_id <- showNotification(
+      sprintf("Running GO-ORA on %d clusters...", k),
+      type = "message",
+      duration = NULL,  # Keep until explicitly removed
+      closeButton = FALSE
+    )
+
     # Run GO-ORA synchronously
     tryCatch({
       message("[DEBUG] Inside tryCatch, calling res_run_cluster_goora")
@@ -7926,8 +7876,13 @@ page_results_server <- function(input, output, session) {
       # Clear state
       rv$pending_cluster_goora <- NULL
 
+      # Remove progress notification
+      removeNotification(progress_id)
+
       if (n_created > 0) {
-        rv$nodes_df <- tb_build_nodes_df(rv$run_root, rv$manifest)
+        message(sprintf("[DEBUG] Refreshing nodes_df, run_root: %s", rv$run_root))
+        rv$nodes_df <- tb_nodes_df(rv$run_root, rv$manifest)
+        message(sprintf("[DEBUG] nodes_df refreshed, %d rows", nrow(rv$nodes_df)))
         showNotification(
           sprintf("Created %d cluster GO-ORA results", n_created),
           type = "message",
@@ -7937,64 +7892,10 @@ page_results_server <- function(input, output, session) {
         showNotification("No cluster GO-ORA results were created", type = "warning")
       }
     }, error = function(e) {
+      removeNotification(progress_id)
       showNotification(paste("GO-ORA failed:", conditionMessage(e)), type = "error")
     })
   }, ignoreInit = TRUE)
-
-  # Helper function to apply table filters for GO engines
-  res_apply_go_table_filters <- function(df, eng) {
-    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(df)
-    eng <- tolower(eng %||% "")
-
-    # Filter by fold_enrichment min (GO-ORA only)
-    if (eng == "goora") {
-      fe_min <- input$res_filter_fold_enrichment_min
-      if (!is.null(fe_min) && is.finite(fe_min) && "fold_enrichment" %in% names(df)) {
-        df <- df[!is.na(df$fold_enrichment) & df$fold_enrichment >= fe_min, , drop = FALSE]
-      }
-    }
-
-    # Filter by score min (1D GO-FCS only)
-    if (eng == "1dgofcs") {
-      score_min <- input$res_filter_score_min
-      if (!is.null(score_min) && is.finite(score_min) && "score" %in% names(df)) {
-        df <- df[!is.na(df$score) & df$score >= score_min, , drop = FALSE]
-      }
-    }
-
-    # Filter by score_x min (2D GO-FCS only)
-    if (eng == "2dgofcs") {
-      score_x_min <- input$res_filter_score_x_min
-      if (!is.null(score_x_min) && is.finite(score_x_min) && "score_x" %in% names(df)) {
-        df <- df[!is.na(df$score_x) & df$score_x >= score_x_min, , drop = FALSE]
-      }
-    }
-
-    # Filter by score_y min (2D GO-FCS only)
-    if (eng == "2dgofcs") {
-      score_y_min <- input$res_filter_score_y_min
-      if (!is.null(score_y_min) && is.finite(score_y_min) && "score_y" %in% names(df)) {
-        df <- df[!is.na(df$score_y) & df$score_y >= score_y_min, , drop = FALSE]
-      }
-    }
-
-    # Filter by n_genes min (all GO engines)
-    n_min <- input$res_filter_n_genes_min
-    if (!is.null(n_min) && is.finite(n_min)) {
-      n_col <- intersect(c("n_genes", "n", "count", "Count"), names(df))[1]
-      if (!is.na(n_col)) {
-        df <- df[!is.na(df[[n_col]]) & df[[n_col]] >= n_min, , drop = FALSE]
-      }
-    }
-
-    # Filter by FDR max (all GO engines)
-    fdr_max <- input$res_filter_fdr_max
-    if (!is.null(fdr_max) && is.finite(fdr_max) && "fdr" %in% names(df)) {
-      df <- df[!is.na(df$fdr) & df$fdr <= fdr_max, , drop = FALSE]
-    }
-
-    df
-  }
 
   if (.has_dt) {
     output$res_table <- DT::renderDataTable({
@@ -8014,11 +7915,6 @@ page_results_server <- function(input, output, session) {
       is_go_engine <- eng %in% c("goora", "1dgofcs", "2dgofcs")
 
       tbl_df <- as.data.frame(tbls[[which]])
-
-      # Apply table filters for GO engines
-      if (is_go_engine) {
-        tbl_df <- res_apply_go_table_filters(tbl_df, eng)
-      }
 
       # Add Show/Copy/Search columns for GO enrichment tables with visibility state
       term_col_check <- intersect(c("term", "term_name"), names(tbl_df))
@@ -8149,11 +8045,6 @@ page_results_server <- function(input, output, session) {
 
       tbl_df_base <- as.data.frame(tbls[[which]])
       is_go_engine <- eng %in% c("goora", "1dgofcs", "2dgofcs")
-
-      # Apply table filters for GO engines
-      if (is_go_engine) {
-        tbl_df_base <- res_apply_go_table_filters(tbl_df_base, eng)
-      }
 
       # NOTE: Numeric columns (fdr, score, fold_enrichment, etc.) are already formatted
       # by tb_render_go_tab() in terpbook.R using tb_format_fdr() and tb_format_sig().
@@ -8392,11 +8283,6 @@ page_results_server <- function(input, output, session) {
 
             tbl_df_tab <- as.data.frame(t_tables[[1]])
 
-            # Apply table filters for GO engines
-            if (is_go_engine) {
-              tbl_df_tab <- res_apply_go_table_filters(tbl_df_tab, eng)
-            }
-
             # Add Show/Copy/Search columns for GO enrichment tables with visibility state
             # Search button is excluded for 2dgofcs
             term_col_check_tab <- intersect(c("term", "term_name"), names(tbl_df_tab))
@@ -8519,11 +8405,6 @@ page_results_server <- function(input, output, session) {
 
             tbl_df_base_tab <- as.data.frame(t_tables[[1]])
 
-            # Apply table filters for GO engines
-            if (is_go_engine) {
-              tbl_df_base_tab <- res_apply_go_table_filters(tbl_df_base_tab, eng)
-            }
-
             # NOTE: Numeric columns (fdr, score, fold_enrichment, etc.) are already formatted
             # by tb_render_go_tab() in terpbook.R using tb_format_fdr() and tb_format_sig().
 
@@ -8548,11 +8429,8 @@ page_results_server <- function(input, output, session) {
           if (eng %in% c("1dgofcs", "goora", "2dgofcs")) {
             tbl_df_raw <- as.data.frame(t_tables[[1]])
 
-            # Apply table filters for GO engines
-            tbl_df_raw <- res_apply_go_table_filters(tbl_df_raw, eng)
-
             if (nrow(tbl_df_raw) == 0) {
-              return(div(class = "text-muted", "No terms match the current filters."))
+              return(div(class = "text-muted", "No terms available."))
             }
 
             if (!("term_id" %in% names(tbl_df_raw))) {

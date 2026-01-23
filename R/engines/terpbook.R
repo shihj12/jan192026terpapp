@@ -1763,6 +1763,7 @@ tb_render_goora <- function(results, style, meta) {
     alpha <- tb_num(style$alpha, 0.8)
     fdr_palette <- style$fdr_palette %||% "yellow_cap"
     flip_axis <- isTRUE(style$flip_axis %||% FALSE)
+    x_axis_metric <- style$x_axis_metric %||% "fold_enrichment"
 
     # Color mode
     cm <- style$color_mode %||% "fdr"
@@ -1779,8 +1780,17 @@ tb_render_goora <- function(results, style, meta) {
         df_plot$term_key <- paste0("term_", seq_len(nrow(df_plot)))
       }
 
-      # Order by fold_enrichment (highest at top) for plotting
-      ordered_keys <- unique(df_plot$term_key[order(df_plot$fold_enrichment)])
+      # Compute x-axis value based on selected metric
+      if (x_axis_metric == "neglog10_fdr") {
+        df_plot$x_value <- -log10(pmax(df_plot$fdr, 1e-100))
+        x_label <- "-log10(FDR)"
+      } else {
+        df_plot$x_value <- df_plot$fold_enrichment
+        x_label <- "Fold Enrichment"
+      }
+
+      # Order by x_value (highest at top) for plotting
+      ordered_keys <- unique(df_plot$term_key[order(df_plot$x_value)])
       df_plot$term_key <- factor(df_plot$term_key, levels = ordered_keys)
 
       # Create lookup for display labels (term_key -> term display name)
@@ -1794,14 +1804,14 @@ tb_render_goora <- function(results, style, meta) {
 
       if (plot_type == "dot") {
         if (use_flat_color) {
-          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
             ggplot2::geom_point(ggplot2::aes(size = n), color = flat_color, alpha = alpha) +
             ggplot2::scale_size_continuous(name = "# Genes", range = c(2, 10)) +
             y_scale +
             if (flip_axis) ggplot2::scale_x_reverse(expand = ggplot2::expansion(mult = c(0, 0.05))) else
               ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0, 0.05)))
         } else {
-          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
             ggplot2::geom_point(ggplot2::aes(size = n, color = fdr), alpha = alpha) +
             tb_fdr_scale("color", df_plot$fdr, palette = fdr_palette) +
             ggplot2::scale_size_continuous(name = "# Genes", range = c(2, 10)) +
@@ -1811,13 +1821,13 @@ tb_render_goora <- function(results, style, meta) {
         }
       } else {
         if (use_flat_color) {
-          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
             ggplot2::geom_col(fill = flat_color, alpha = alpha) +
             if (flip_axis) ggplot2::scale_x_reverse(expand = ggplot2::expansion(mult = c(0, 0.05))) else
               ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0, 0.05))) +
             y_scale
         } else {
-          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+          p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
             ggplot2::geom_col(ggplot2::aes(fill = fdr), alpha = alpha) +
             tb_fdr_scale("fill", df_plot$fdr, palette = fdr_palette) +
             if (flip_axis) ggplot2::scale_x_reverse(expand = ggplot2::expansion(mult = c(0, 0.05))) else
@@ -1828,7 +1838,7 @@ tb_render_goora <- function(results, style, meta) {
 
       # FIX: font_size now applies to term labels AND axis titles
       p <- p +
-        ggplot2::labs(x = "Fold Enrichment", y = NULL) +
+        ggplot2::labs(x = x_label, y = NULL) +
         tb_theme_base(axis_text_size, axis_style = style$axis_style %||% "clean") +
         ggplot2::theme(
           axis.text.y = ggplot2::element_text(size = font_size),
@@ -2183,6 +2193,7 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
   alpha <- tb_num(style$alpha, 0.8)
   fdr_palette <- style$fdr_palette %||% "yellow_cap"
   flip_axis <- isTRUE(style$flip_axis %||% FALSE)
+  x_axis_metric <- style$x_axis_metric %||% "fold_enrichment"
 
   # Color mode
   cm <- style$color_mode %||% "fdr"
@@ -2200,8 +2211,18 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
       df_plot$term_key <- paste0("term_", seq_len(nrow(df_plot)))
     }
 
-    # Order by fold_enrichment (highest at top) - use absolute value for 1D-GOFCS scores
-    ordered_keys <- unique(df_plot$term_key[order(abs(df_plot$fold_enrichment))])
+    # For non-FCS (GO-ORA): support x_axis_metric toggle between fold_enrichment and -log10(FDR)
+    # For FCS engines: always use fold_enrichment (which contains the score)
+    if (!is_fcs && x_axis_metric == "neglog10_fdr") {
+      df_plot$x_value <- -log10(pmax(df_plot$fdr, 1e-100))
+      ora_x_label <- "-log10(FDR)"
+    } else {
+      df_plot$x_value <- df_plot$fold_enrichment
+      ora_x_label <- "Fold Enrichment"
+    }
+
+    # Order by x_value (highest at top) - use absolute value for 1D-GOFCS scores
+    ordered_keys <- unique(df_plot$term_key[order(abs(df_plot$x_value))])
     df_plot$term_key <- factor(df_plot$term_key, levels = ordered_keys)
 
     # Create lookup for display labels (term_key -> term display name)
@@ -2238,15 +2259,15 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
       position = if (flip_axis) "right" else "left"
     )
 
-    # Create plot using fold_enrichment as x-axis, term_key as y-axis
+    # Create plot using x_value as x-axis, term_key as y-axis
     if (plot_type == "dot") {
       if (use_flat_color) {
-        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
           ggplot2::geom_point(ggplot2::aes(size = n), color = flat_color, alpha = alpha) +
           ggplot2::scale_size_continuous(name = "# Genes", range = c(2, 10)) +
           fcs_x_scale + y_scale
       } else {
-        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
           ggplot2::geom_point(ggplot2::aes(size = n, color = fdr), alpha = alpha) +
           tb_fdr_scale("color", df_plot$fdr, palette = fdr_palette) +
           ggplot2::scale_size_continuous(name = "# Genes", range = c(2, 10)) +
@@ -2254,11 +2275,11 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
       }
     } else {
       if (use_flat_color) {
-        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
           ggplot2::geom_col(fill = flat_color, alpha = alpha) +
           fcs_x_scale + y_scale
       } else {
-        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = fold_enrichment, y = term_key)) +
+        p <- ggplot2::ggplot(df_plot, ggplot2::aes(x = x_value, y = term_key)) +
           ggplot2::geom_col(ggplot2::aes(fill = fdr), alpha = alpha) +
           tb_fdr_scale("fill", df_plot$fdr, palette = fdr_palette) +
           fcs_x_scale + y_scale
@@ -2266,13 +2287,13 @@ tb_render_go_tab <- function(tab_name, tab_data, style, plot_type = "bar", meta 
     }
 
     # FIX: font_size now applies to term labels AND axis titles
-    # FIX: Use score_label if provided, else "Score" for FCS, "Fold Enrichment" for ORA
+    # FIX: Use score_label if provided, else "Score" for FCS, ora_x_label for ORA
     x_axis_label <- if (!is.null(score_label) && nzchar(score_label)) {
       score_label
     } else if (is_fcs) {
       "Score"
     } else {
-      "Fold Enrichment"
+      ora_x_label
     }
     p <- p +
       ggplot2::labs(x = x_axis_label, y = NULL) +
@@ -2860,7 +2881,8 @@ tb_render_idquant_replicate <- function(results, style, meta) {
     })
 
     tbl <- do.call(rbind, tbl_list)
-    rownames(tbl) <- NULL
+    rownames(tbl) <- NULL
+
   if (nrow(tbl) > 0 && "abundance" %in% names(tbl)) {
     tbl$abundance <- format_k_suffix(tbl$abundance)
   }
@@ -6071,6 +6093,10 @@ tb_render_peptide_aggregate_to_protein <- function(results, style, meta) {
 
 # ---- Heatmap ----------------------------------------------------------------
 
+# NOTE: We calculate extra space needed for custom gtable additions (group bars,
+# cluster bars) inline before calling pheatmap, and reduce pheatmap's width/height
+# accordingly. This ensures the final gtable size matches the user's target dimensions.
+
 tb_render_heatmap <- function(results, style, context = NULL) {
   tb_require_pkg("ggplot2")
   tb_require_pkg("pheatmap")
@@ -6147,15 +6173,24 @@ tb_render_heatmap <- function(results, style, context = NULL) {
     }
   }
 
+  # Transpose option: genes become columns, samples become rows
+  transpose <- isTRUE(style$transpose %||% FALSE)
+
+  # Dendrogram visibility (independent of clustering)
+  show_dendrogram <- isTRUE(style$show_dendrogram %||% TRUE)
+
   show_row_labels <- isTRUE(style$show_row_labels %||% TRUE)
   row_font_size <- suppressWarnings(as.numeric(style$row_font_size %||% 8))
   if (!is.finite(row_font_size) || row_font_size <= 0) row_font_size <- 8
 
+  # Cluster color bar visibility (extracted early for margin calculation)
+  show_cluster_colors <- isTRUE(style$show_cluster_colors %||% FALSE)
+
   na_color <- as.character(style$na_color %||% "grey50")[1]
-  width <- suppressWarnings(as.numeric(style$width %||% NA_real_))
-  height <- suppressWarnings(as.numeric(style$height %||% NA_real_))
-  if (!is.finite(width) || width <= 0) width <- NA_real_
-  if (!is.finite(height) || height <= 0) height <- NA_real_
+  width <- suppressWarnings(as.numeric(style$width %||% 10))
+  height <- suppressWarnings(as.numeric(style$height %||% 8))
+  if (!is.finite(width) || width <= 0) width <- 10
+  if (!is.finite(height) || height <= 0) height <- 8
 
   palette_name <- as.character(style$color_palette %||% "viridis")[1]
   get_palette <- function(name, n = 100) {
@@ -6203,11 +6238,12 @@ tb_render_heatmap <- function(results, style, context = NULL) {
       ann$group[unknown_idx] <- "Unknown"
     }
 
-    rep_idx <- ave(seq_along(ann$group), ann$group, FUN = seq_along)
-    col_labels <- paste0(ann$group, " ", rep_idx)
-    if (anyDuplicated(col_labels)) {
-      col_labels <- make.unique(col_labels, sep = " ")
-    }
+    # Use group names only for display (no replicate numbers)
+    col_labels <- as.character(ann$group)
+
+    # Keep unique internal IDs for annotation_col row names (required by data.frame)
+    # These match the original column names of the matrix
+    annotation_col_rownames <- colnames(mat)
 
     annotation_col <- ann
 
@@ -6237,210 +6273,333 @@ tb_render_heatmap <- function(results, style, context = NULL) {
     }
   }
 
-  if (!is.null(col_labels) && length(col_labels) == ncol(mat)) {
-    colnames(mat) <- col_labels
-    if (!is.null(annotation_col) && nrow(annotation_col) == length(col_labels)) {
-      rownames(annotation_col) <- col_labels
+  # Handle transpose: genes become columns, samples become rows
+  # Store original values for annotation bar logic
+  annotation_row <- NULL
+  original_mat <- mat
+  original_cluster_rows_arg <- cluster_rows_arg
+  original_col_names <- colnames(mat)  # Keep original sample names for annotation matching
+
+  if (transpose) {
+    # For transposed mode: keep unique sample IDs as row names (after transpose)
+    # We'll display group-only labels via gtable manipulation for the row labels
+    mat <- t(mat)
+    # When transposed:
+    # - Original rows (genes) become columns -> cluster columns using original row dendrogram
+    # - Original columns (samples) become rows -> don't cluster these rows
+    # - Group annotation (was for columns) now applies to rows
+    if (!is.null(annotation_col)) {
+      annotation_row <- annotation_col
+      annotation_col <- NULL
+    }
+  } else {
+    # For non-transposed mode: use group-only labels as column names (duplicates OK for colnames)
+    if (!is.null(col_labels) && length(col_labels) == ncol(mat)) {
+      colnames(mat) <- col_labels
     }
   }
 
-  # Generate pheatmap WITHOUT column annotation (we'll add it at the bottom manually)
+  # Determine cluster settings for dimension calculation
+  cluster_k_val <- suppressWarnings(as.integer(style$cluster_k %||% 0))
+  will_show_clusters <- isTRUE(style$show_cluster_colors %||% FALSE) &&
+                        !is.na(cluster_k_val) && cluster_k_val >= 2
+
+  # Pre-calculate extra space needed for custom annotations (added via gtable)
+  extra_width_inches <- 0
+  extra_height_inches <- 0
+
+  # Group color bar: 8pt height (bottom in normal mode, left in transposed)
+  group_bar_size <- 8 / 72  # 8pt in inches
+  has_group_annotation <- !is.null(annotation_col) && !is.null(annotation_colors)
+  has_group_annotation_transposed <- !is.null(annotation_row) && !is.null(annotation_colors)
+
+  # Cluster color bar: 12pt width/height with numbers
+  cluster_bar_size <- 12 / 72  # 12pt in inches
+
+  if (transpose) {
+    # Transposed: group bar on LEFT (width), cluster bar at TOP (height)
+    if (has_group_annotation_transposed) {
+      # Group bar + labels on left
+      group_col <- annotation_row[[1]]
+      unique_groups <- unique(as.character(group_col))
+      max_label_chars <- max(nchar(unique_groups), na.rm = TRUE)
+      if (!is.finite(max_label_chars)) max_label_chars <- 5
+      group_label_width <- max_label_chars * 6 / 72 + 0.1  # ~6pt per char + padding
+      extra_width_inches <- extra_width_inches + group_bar_size + group_label_width
+    }
+    if (will_show_clusters) {
+      extra_height_inches <- extra_height_inches + cluster_bar_size
+    }
+  } else {
+    # Normal: group bar at BOTTOM (height), cluster bar on LEFT (width)
+    if (has_group_annotation) {
+      extra_height_inches <- extra_height_inches + group_bar_size
+    }
+    if (will_show_clusters) {
+      extra_width_inches <- extra_width_inches + cluster_bar_size
+    }
+  }
+
+  # Reduce pheatmap dimensions to leave room for custom annotations
+  # Note: Legend spacing is handled dynamically after gtable is built
+  pheatmap_width <- width - extra_width_inches
+  pheatmap_height <- height - extra_height_inches
+
+  # Ensure minimum dimensions
+  if (pheatmap_width < 2) pheatmap_width <- 2
+  if (pheatmap_height < 2) pheatmap_height <- 2
+
+  # Generate pheatmap WITHOUT custom annotations (we add them via gtable)
+  # When transposed: cluster_cols uses the gene dendrogram, cluster_rows = FALSE
+  # When normal: cluster_rows uses the gene dendrogram, cluster_cols = FALSE
   hm <- pheatmap::pheatmap(
     mat,
-    cluster_rows = cluster_rows_arg,
-    cluster_cols = FALSE,
-    annotation_col = NULL,  # Don't add annotation at top
+    cluster_rows = if (transpose) FALSE else cluster_rows_arg,
+    cluster_cols = if (transpose) cluster_rows_arg else FALSE,
+    treeheight_row = if (!transpose && show_dendrogram) 50 else 0,
+    treeheight_col = if (transpose && show_dendrogram) 50 else 0,
+    annotation_col = NULL,  # We add custom annotations via gtable
+    annotation_row = NULL,
     annotation_colors = NULL,
+    annotation_legend = FALSE,
+    legend = TRUE,
     na_col = na_color,
     scale = "none",
-    show_rownames = show_row_labels,
-    fontsize_row = row_font_size,
+    show_rownames = if (transpose) TRUE else show_row_labels,
+    show_colnames = if (transpose) show_row_labels else TRUE,
+    fontsize_row = if (transpose) 8 else row_font_size,
+    fontsize_col = if (transpose) row_font_size else 8,
+    angle_col = if (transpose) 90 else 270,
     color = get_palette(palette_name, n = 100),
     border_color = "black",
     silent = TRUE,
-    width = width,
-    height = height
+    width = pheatmap_width,
+    height = pheatmap_height
   )
 
-  # Add group color bar at the BOTTOM (above column labels) using gtable manipulation
-  if (!is.null(annotation_col) && !is.null(annotation_colors) && !is.null(hm$gtable)) {
-    tryCatch({
-      tb_require_pkg("grid")
-      tb_require_pkg("gtable")
-
-      gt <- hm$gtable
-      n_cols <- ncol(mat)
-
-      # Get group colors for each column in order
-      col_groups <- annotation_col$group[match(colnames(mat), rownames(annotation_col))]
-      col_colors <- annotation_colors$group[as.character(col_groups)]
-
-      # Create the color bar grob - one rectangle per column
-      bar_height <- grid::unit(8, "pt")
-
-      # Build list of rectangle grobs for the color bar
-      rect_grobs <- lapply(seq_len(n_cols), function(i) {
-        grid::rectGrob(
-          x = grid::unit((i - 0.5) / n_cols, "npc"),
-          y = grid::unit(0.5, "npc"),
-          width = grid::unit(1 / n_cols, "npc"),
-          height = grid::unit(1, "npc"),
-          gp = grid::gpar(fill = col_colors[i], col = "black", lwd = 0.5),
-          name = paste0("colorbar_rect_", i)
-        )
-      })
-
-      # Combine into a gTree
-      colorbar_grob <- grid::gTree(
-        children = do.call(grid::gList, rect_grobs),
-        name = "group_colorbar"
-      )
-
-      # Find the matrix grob position in the gtable
-      matrix_idx <- which(gt$layout$name == "matrix")
-      if (length(matrix_idx) > 0) {
-        matrix_row <- gt$layout$b[matrix_idx]
-        matrix_l <- gt$layout$l[matrix_idx]
-        matrix_r <- gt$layout$r[matrix_idx]
-
-        # Add a new row just below the matrix for the color bar
-        gt <- gtable::gtable_add_rows(gt, heights = bar_height, pos = matrix_row)
-
-        # Add the colorbar grob to this new row
-        gt <- gtable::gtable_add_grob(
-          gt,
-          grobs = colorbar_grob,
-          t = matrix_row + 1,
-          l = matrix_l,
-          r = matrix_r,
-          name = "group_colorbar"
-        )
-
-        hm$gtable <- gt
-      }
-    }, error = function(e) {
-      # If gtable manipulation fails, silently continue without the bottom bar
-      # The heatmap will still render, just without the custom color bar
-    })
+  # Helper to get gtable element position
+  get_gt_pos <- function(gt, name) {
+    idx <- which(gt$layout$name == name)
+    if (length(idx) == 0) return(NULL)
+    list(idx = idx, t = gt$layout$t[idx], b = gt$layout$b[idx],
+         l = gt$layout$l[idx], r = gt$layout$r[idx])
   }
 
-  # Add cluster membership color bar on the LEFT side if cluster_k >= 2
-  cluster_k <- suppressWarnings(as.integer(style$cluster_k %||% 0))
-  show_clusters <- isTRUE(style$show_cluster_colors %||% FALSE)
+  # === NORMAL MODE: Add group bar at BOTTOM, cluster bar on LEFT ===
+  if (!transpose && !is.null(hm$gtable)) {
+    tb_require_pkg("grid")
+    tb_require_pkg("gtable")
+    gt <- hm$gtable
 
-  # Debug: log cluster settings
-  message(sprintf("[Heatmap] Cluster settings: k=%s, show=%s, gtable=%s",
-                  cluster_k, show_clusters, !is.null(hm$gtable)))
+    # Add group color bar at BOTTOM
+    if (has_group_annotation) {
+      tryCatch({
+        n_cols <- ncol(mat)
+        col_groups <- annotation_col$group[match(original_col_names, rownames(annotation_col))]
+        col_colors <- annotation_colors$group[as.character(col_groups)]
 
-  if (!is.na(cluster_k) && cluster_k >= 2 && show_clusters && !is.null(hm$gtable)) {
-    tryCatch({
-      tb_require_pkg("grid")
-      tb_require_pkg("gtable")
+        bar_height <- grid::unit(group_bar_size, "inches")
+        rect_grobs <- lapply(seq_len(n_cols), function(i) {
+          grid::rectGrob(
+            x = grid::unit((i - 0.5) / n_cols, "npc"),
+            y = grid::unit(0.5, "npc"),
+            width = grid::unit(1 / n_cols, "npc"),
+            height = grid::unit(1, "npc"),
+            gp = grid::gpar(fill = col_colors[i], col = "black", lwd = 0.5),
+            name = paste0("group_rect_", i)
+          )
+        })
+        colorbar_grob <- grid::gTree(children = do.call(grid::gList, rect_grobs), name = "group_colorbar")
 
-      gt <- hm$gtable
-      n_display_rows <- nrow(mat)  # Rows actually displayed (after NA filtering)
-
-      # Use pheatmap's tree_row if available - this matches the visual row order exactly
-      # Otherwise fall back to the pre-computed dendrogram from data
-      cluster_dendro <- NULL
-      if (!is.null(hm$tree_row) && inherits(hm$tree_row, "hclust")) {
-        cluster_dendro <- hm$tree_row
-      } else if (!is.null(dendro) && inherits(dendro, "hclust")) {
-        cluster_dendro <- dendro
-      }
-
-      # If no dendrogram, we can't do clustering
-      if (is.null(cluster_dendro)) {
-        stop("No dendrogram available for cluster cutting")
-      }
-
-      # Cut dendrogram into clusters
-      # cutree returns a named vector where names are the original labels
-      # and values are cluster assignments (1 to k)
-      all_clusters <- stats::cutree(cluster_dendro, k = cluster_k)
-
-      # Get row order from dendrogram - this is the visual order in the heatmap
-      # dendro$order[1] is the index of the row that appears at the TOP of the heatmap
-      row_order <- cluster_dendro$order
-
-      # The clusters need to be in visual order (top to bottom of heatmap)
-      # row_order gives us which original row index is at each visual position
-      ordered_clusters <- all_clusters[row_order]
-
-      # Ensure we have the right number of cluster assignments
-      if (length(ordered_clusters) != n_display_rows) {
-        # If mismatch, try to map by row names
-        display_names <- rownames(mat)
-        dendro_labels <- cluster_dendro$labels
-        if (!is.null(display_names) && !is.null(dendro_labels) && length(dendro_labels) == length(all_clusters)) {
-          # Find which dendro labels match our displayed rows
-          match_idx <- match(display_names, dendro_labels)
-          if (!any(is.na(match_idx))) {
-            # Get clusters for matched rows, but we need visual order
-            # pheatmap reorders rows according to the dendrogram
-            # So the visual order is: row_order applied to the matched indices
-            ordered_clusters <- all_clusters[row_order]
-            ordered_clusters <- ordered_clusters[seq_len(n_display_rows)]
-          } else {
-            stop(sprintf("Cannot map %d dendro items to %d display rows", length(all_clusters), n_display_rows))
-          }
-        } else {
-          stop(sprintf("Cluster count mismatch: %d vs %d rows", length(ordered_clusters), n_display_rows))
+        matrix_pos <- get_gt_pos(gt, "matrix")
+        if (!is.null(matrix_pos)) {
+          # Insert row WITHIN existing space (replace a null row or use reserved space)
+          gt <- gtable::gtable_add_rows(gt, heights = bar_height, pos = matrix_pos$b)
+          gt <- gtable::gtable_add_grob(gt, colorbar_grob,
+            t = matrix_pos$b + 1, l = matrix_pos$l, r = matrix_pos$r, name = "group_colorbar")
         }
-      }
-
-      # Generate distinct colors for clusters
-      cluster_colors <- grDevices::hcl.colors(cluster_k, palette = "Set2")
-      row_colors <- cluster_colors[ordered_clusters]
-
-      # Create the color bar grob - one rectangle per row
-      bar_width <- grid::unit(12, "pt")
-
-      rect_grobs <- lapply(seq_len(n_display_rows), function(i) {
-        # Rows go from top to bottom in pheatmap, so invert y position
-        y_pos <- (n_display_rows - i + 0.5) / n_display_rows
-        grid::rectGrob(
-          x = grid::unit(0.5, "npc"),
-          y = grid::unit(y_pos, "npc"),
-          width = grid::unit(1, "npc"),
-          height = grid::unit(1 / n_display_rows, "npc"),
-          gp = grid::gpar(fill = row_colors[i], col = NA),
-          name = paste0("cluster_rect_", i)
-        )
+      }, error = function(e) {
+        message("[Heatmap] Group color bar error: ", conditionMessage(e))
       })
+    }
 
-      # Combine into a gTree
-      cluster_bar_grob <- grid::gTree(
-        children = do.call(grid::gList, rect_grobs),
-        name = "cluster_colorbar"
-      )
+    # Add cluster color bar on LEFT with numbered labels
+    if (will_show_clusters && !is.null(dendro) && inherits(dendro, "hclust")) {
+      tryCatch({
+        n_display_rows <- nrow(mat)
+        all_clusters <- stats::cutree(dendro, k = cluster_k_val)
+        row_order <- if (!is.null(hm$tree_row)) hm$tree_row$order else dendro$order
+        ordered_clusters <- all_clusters[row_order]
 
-      # Find the matrix grob position in the gtable
-      matrix_idx <- which(gt$layout$name == "matrix")
-      if (length(matrix_idx) > 0) {
-        matrix_col <- gt$layout$l[matrix_idx]
-        matrix_t <- gt$layout$t[matrix_idx]
-        matrix_b <- gt$layout$b[matrix_idx]
+        # Handle NA filtering mismatch
+        if (length(ordered_clusters) != n_display_rows) {
+          ordered_clusters <- ordered_clusters[seq_len(n_display_rows)]
+        }
 
-        # Add a new column to the LEFT of the matrix for the cluster bar
-        gt <- gtable::gtable_add_cols(gt, widths = bar_width, pos = matrix_col - 1)
+        cluster_colors <- grDevices::hcl.colors(cluster_k_val, palette = "Set2")
+        row_colors <- cluster_colors[ordered_clusters]
+        bar_width <- grid::unit(cluster_bar_size, "inches")
 
-        # Add the cluster bar grob to this new column
-        gt <- gtable::gtable_add_grob(
-          gt,
-          grobs = cluster_bar_grob,
-          t = matrix_t,
-          b = matrix_b,
-          l = matrix_col,
-          name = "cluster_colorbar"
-        )
+        # Create rectangles
+        rect_grobs <- lapply(seq_len(n_display_rows), function(i) {
+          y_pos <- (n_display_rows - i + 0.5) / n_display_rows
+          grid::rectGrob(x = grid::unit(0.5, "npc"), y = grid::unit(y_pos, "npc"),
+            width = grid::unit(1, "npc"), height = grid::unit(1 / n_display_rows, "npc"),
+            gp = grid::gpar(fill = row_colors[i], col = NA), name = paste0("cluster_rect_", i))
+        })
 
-        hm$gtable <- gt
-      }
-    }, error = function(e) {
-      # Log error for debugging but continue without the cluster bar
-      message("[Heatmap] Cluster color bar error: ", conditionMessage(e))
-    })
+        # Create numbered labels at cluster centers
+        cluster_rle <- rle(ordered_clusters)
+        label_grobs <- list()
+        cumsum_lens <- c(0, cumsum(cluster_rle$lengths))
+        for (j in seq_along(cluster_rle$values)) {
+          center <- (cumsum_lens[j] + cumsum_lens[j + 1] + 1) / 2
+          y_pos <- (n_display_rows - center + 0.5) / n_display_rows
+          label_grobs[[j]] <- grid::textGrob(
+            label = as.character(cluster_rle$values[j]),
+            x = grid::unit(0.5, "npc"), y = grid::unit(y_pos, "npc"),
+            gp = grid::gpar(col = "white", fontsize = 9, fontface = "bold"),
+            name = paste0("cluster_label_", j))
+        }
+
+        cluster_grob <- grid::gTree(children = do.call(grid::gList, c(rect_grobs, label_grobs)),
+          name = "cluster_colorbar")
+
+        matrix_pos <- get_gt_pos(gt, "matrix")
+        if (!is.null(matrix_pos)) {
+          gt <- gtable::gtable_add_cols(gt, widths = bar_width, pos = matrix_pos$l - 1)
+          # Re-find matrix after column addition
+          matrix_pos <- get_gt_pos(gt, "matrix")
+          gt <- gtable::gtable_add_grob(gt, cluster_grob,
+            t = matrix_pos$t, b = matrix_pos$b, l = matrix_pos$l - 1, name = "cluster_colorbar")
+        }
+      }, error = function(e) {
+        message("[Heatmap] Cluster color bar error: ", conditionMessage(e))
+      })
+    }
+
+    hm$gtable <- gt
+  }
+
+  # === TRANSPOSED MODE: Add group bar on LEFT, cluster bar at TOP ===
+  if (transpose && !is.null(hm$gtable)) {
+    tb_require_pkg("grid")
+    tb_require_pkg("gtable")
+    gt <- hm$gtable
+
+    # Hide default row names (sample IDs) - we show group labels instead
+    row_names_idx <- which(gt$layout$name == "row_names")
+    if (length(row_names_idx) > 0) {
+      gt$grobs[[row_names_idx]] <- grid::nullGrob()
+    }
+
+    # Add group color bar and labels on LEFT
+    if (has_group_annotation_transposed) {
+      tryCatch({
+        n_rows <- nrow(mat)
+        group_col <- annotation_row[[1]]
+        grp_colors <- annotation_colors[[names(annotation_row)[1]]]
+        unique_groups <- unique(as.character(group_col))
+
+        bar_width <- grid::unit(group_bar_size, "inches")
+        max_label_chars <- max(nchar(unique_groups), na.rm = TRUE)
+        label_width <- grid::unit(max_label_chars * 6 + 10, "pt")
+
+        # Color rectangles
+        rect_grobs <- lapply(seq_len(n_rows), function(i) {
+          y_pos <- (n_rows - i + 0.5) / n_rows
+          grp <- as.character(group_col[i])
+          fill_col <- grp_colors[grp]
+          grid::rectGrob(x = grid::unit(0.5, "npc"), y = grid::unit(y_pos, "npc"),
+            width = grid::unit(1, "npc"), height = grid::unit(1 / n_rows, "npc"),
+            gp = grid::gpar(fill = fill_col, col = NA), name = paste0("group_rect_", i))
+        })
+        group_bar_grob <- grid::gTree(children = do.call(grid::gList, rect_grobs), name = "group_colorbar")
+
+        # Group labels (one per group, centered)
+        label_grobs <- lapply(unique_groups, function(grp) {
+          grp_indices <- which(group_col == grp)
+          center_idx <- mean(grp_indices)
+          y_pos <- (n_rows - center_idx + 0.5) / n_rows
+          grid::textGrob(label = grp, x = grid::unit(1, "npc") - grid::unit(4, "pt"),
+            y = grid::unit(y_pos, "npc"), just = c("right", "center"),
+            gp = grid::gpar(fontsize = 8), name = paste0("group_label_", grp))
+        })
+        group_labels_grob <- grid::gTree(children = do.call(grid::gList, label_grobs), name = "group_labels")
+
+        matrix_pos <- get_gt_pos(gt, "matrix")
+        if (!is.null(matrix_pos)) {
+          # Add label column first (further left)
+          gt <- gtable::gtable_add_cols(gt, widths = label_width, pos = matrix_pos$l - 1)
+          matrix_pos <- get_gt_pos(gt, "matrix")
+          gt <- gtable::gtable_add_grob(gt, group_labels_grob,
+            t = matrix_pos$t, b = matrix_pos$b, l = matrix_pos$l - 1, name = "group_labels")
+
+          # Add color bar column (between labels and matrix)
+          gt <- gtable::gtable_add_cols(gt, widths = bar_width, pos = matrix_pos$l - 1)
+          matrix_pos <- get_gt_pos(gt, "matrix")
+          gt <- gtable::gtable_add_grob(gt, group_bar_grob,
+            t = matrix_pos$t, b = matrix_pos$b, l = matrix_pos$l - 1, name = "group_colorbar")
+        }
+      }, error = function(e) {
+        message("[Heatmap] Transposed group bar error: ", conditionMessage(e))
+      })
+    }
+
+    # Add cluster color bar at TOP with numbered labels
+    if (will_show_clusters && !is.null(dendro) && inherits(dendro, "hclust")) {
+      tryCatch({
+        n_display_cols <- ncol(mat)
+        all_clusters <- stats::cutree(dendro, k = cluster_k_val)
+        col_order <- if (!is.null(hm$tree_col)) hm$tree_col$order else dendro$order
+        ordered_clusters <- all_clusters[col_order]
+
+        if (length(ordered_clusters) != n_display_cols) {
+          ordered_clusters <- ordered_clusters[seq_len(n_display_cols)]
+        }
+
+        cluster_colors <- grDevices::hcl.colors(cluster_k_val, palette = "Set2")
+        col_colors <- cluster_colors[ordered_clusters]
+        bar_height <- grid::unit(cluster_bar_size, "inches")
+
+        # Rectangles
+        rect_grobs <- lapply(seq_len(n_display_cols), function(i) {
+          x_pos <- (i - 0.5) / n_display_cols
+          grid::rectGrob(x = grid::unit(x_pos, "npc"), y = grid::unit(0.5, "npc"),
+            width = grid::unit(1 / n_display_cols, "npc"), height = grid::unit(1, "npc"),
+            gp = grid::gpar(fill = col_colors[i], col = NA), name = paste0("cluster_rect_col_", i))
+        })
+
+        # Numbered labels
+        cluster_rle <- rle(ordered_clusters)
+        label_grobs <- list()
+        cumsum_lens <- c(0, cumsum(cluster_rle$lengths))
+        for (j in seq_along(cluster_rle$values)) {
+          center <- (cumsum_lens[j] + cumsum_lens[j + 1] + 1) / 2
+          x_pos <- (center - 0.5) / n_display_cols
+          label_grobs[[j]] <- grid::textGrob(
+            label = as.character(cluster_rle$values[j]),
+            x = grid::unit(x_pos, "npc"), y = grid::unit(0.5, "npc"),
+            gp = grid::gpar(col = "white", fontsize = 9, fontface = "bold"),
+            name = paste0("cluster_label_col_", j))
+        }
+
+        cluster_grob <- grid::gTree(children = do.call(grid::gList, c(rect_grobs, label_grobs)),
+          name = "cluster_colorbar_top")
+
+        matrix_pos <- get_gt_pos(gt, "matrix")
+        if (!is.null(matrix_pos)) {
+          gt <- gtable::gtable_add_rows(gt, heights = bar_height, pos = matrix_pos$t - 1)
+          matrix_pos <- get_gt_pos(gt, "matrix")
+          gt <- gtable::gtable_add_grob(gt, cluster_grob,
+            t = matrix_pos$t - 1, l = matrix_pos$l, r = matrix_pos$r, name = "cluster_colorbar_top")
+        }
+      }, error = function(e) {
+        message("[Heatmap] Transposed cluster bar error: ", conditionMessage(e))
+      })
+    }
+
+    hm$gtable <- gt
   }
 
   force_text_black <- function(g) {
@@ -6490,6 +6649,121 @@ tb_render_heatmap <- function(results, style, context = NULL) {
       tabs = NULL
     ))
   }
+
+  # === FIT GTABLE TO TARGET DIMENSIONS ===
+  # After all gtable manipulations, ensure proper spacing and scale to fit
+  gt <- hm$gtable
+
+  # Helper to safely convert units to inches (needs graphics device context)
+  safe_convert_inches <- function(unit_obj) {
+    tryCatch({
+      current_dev <- grDevices::dev.cur()
+      if (current_dev == 1) {  # null device
+        grDevices::pdf(NULL)
+        on.exit(grDevices::dev.off(), add = TRUE)
+      }
+      grid::convertUnit(unit_obj, "inches", valueOnly = TRUE)
+    }, error = function(e) {
+      # Fallback estimation
+      vals <- numeric(length(unit_obj))
+      for (i in seq_along(unit_obj)) {
+        u <- unit_obj[[i]]
+        unit_type <- attr(u, "unit")
+        val <- as.numeric(u)
+        if (is.null(unit_type)) unit_type <- "null"
+        vals[i] <- switch(unit_type,
+          "inches" = val,
+          "cm" = val / 2.54,
+          "mm" = val / 25.4,
+          "points" = val / 72,
+          "pt" = val / 72,
+          "npc" = 0.5,
+          "null" = 0.5,
+          0.5
+        )
+      }
+      vals
+    })
+  }
+
+  # Helper to calculate text width in inches based on string and font size
+  calc_text_width_inches <- function(text_strings, fontsize_pt) {
+    if (length(text_strings) == 0) return(0)
+    max_chars <- max(nchar(as.character(text_strings)), na.rm = TRUE)
+    if (!is.finite(max_chars)) max_chars <- 0
+    # Approximate: average character width is ~0.6 * font height
+    # Font height in inches = fontsize_pt / 72
+    char_width <- (fontsize_pt / 72) * 0.6
+    max_chars * char_width
+  }
+
+  # === ENSURE LEGEND DOESN'T OVERLAP WITH ROW NAMES (normal mode) ===
+  # In normal mode, row_names (gene names) are on the right side of the matrix,
+  # and the legend is further right. We need to ensure proper spacing.
+  if (!transpose) {
+    row_names_pos <- get_gt_pos(gt, "row_names")
+    legend_pos <- get_gt_pos(gt, "legend")
+
+    if (!is.null(row_names_pos) && !is.null(legend_pos)) {
+      row_names_col <- row_names_pos$r
+      legend_col <- legend_pos$l
+
+      # Calculate required width for row names based on actual text
+      labels <- rownames(mat)
+      fontsize <- row_font_size
+      row_names_width_in <- calc_text_width_inches(labels, fontsize) + 0.15  # text + small padding
+
+      # Ensure the row_names column has enough width
+      current_row_names_width <- safe_convert_inches(gt$widths[row_names_col])
+      if (length(current_row_names_width) == 0 || !is.finite(current_row_names_width)) {
+        current_row_names_width <- 0
+      }
+
+      if (row_names_width_in > current_row_names_width) {
+        gt$widths[row_names_col] <- grid::unit(row_names_width_in, "inches")
+      }
+
+      # Add a gap column between row_names and legend for visual separation
+      # Insert after row_names column (before legend)
+      gap_size <- grid::unit(0.2, "inches")
+      gt <- gtable::gtable_add_cols(gt, widths = gap_size, pos = row_names_col)
+    }
+  }
+
+  # === ENSURE COL_NAMES (gene names in transposed mode) HAVE ENOUGH SPACE ===
+  col_names_pos <- get_gt_pos(gt, "col_names")
+  if (!is.null(col_names_pos) && transpose) {
+    # In transposed mode, col_names are the gene names at the bottom
+    labels <- rownames(original_mat)  # Original gene names
+    fontsize <- row_font_size
+    # Rotated text: width becomes height. Add generous padding for the full text
+    col_names_height_in <- calc_text_width_inches(labels, fontsize) + 0.25
+
+    col_names_row <- col_names_pos$b
+    current_height <- safe_convert_inches(gt$heights[col_names_row])
+    if (length(current_height) == 0) current_height <- 0
+
+    if (col_names_height_in > current_height) {
+      gt$heights[col_names_row] <- grid::unit(col_names_height_in, "inches")
+    }
+  }
+
+  # === SCALE TO FIT TARGET DIMENSIONS ===
+  current_width_in <- sum(safe_convert_inches(gt$widths))
+  current_height_in <- sum(safe_convert_inches(gt$heights))
+
+  scale_x <- if (current_width_in > width && current_width_in > 0) width / current_width_in else 1
+  scale_y <- if (current_height_in > height && current_height_in > 0) height / current_height_in else 1
+  scale_factor <- min(scale_x, scale_y)
+
+  if (scale_factor < 1) {
+    width_inches <- safe_convert_inches(gt$widths) * scale_factor
+    height_inches <- safe_convert_inches(gt$heights) * scale_factor
+    gt$widths <- grid::unit(width_inches, "inches")
+    gt$heights <- grid::unit(height_inches, "inches")
+  }
+
+  hm$gtable <- gt
 
   p <- suppressWarnings(ggplotify::as.ggplot(hm$gtable)) + ggplot2::theme_void()
   attr(p, "tb_skip_force_black_text") <- TRUE

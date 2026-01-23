@@ -706,6 +706,55 @@ tb_create_child_view <- function(parent_dir, view_id, engine_id, label, params, 
     null = "null"
   )
 
+  # Register the new view in the parent's descriptor (step.json or view.json)
+  # so that tb_build_step_tree can discover it
+  parent_step_json <- file.path(parent_dir, "step.json")
+  parent_view_json <- file.path(parent_dir, "view.json")
+
+  parent_desc_path <- if (file.exists(parent_step_json)) {
+    parent_step_json
+  } else if (file.exists(parent_view_json)) {
+    parent_view_json
+  } else {
+    NULL
+  }
+
+  if (!is.null(parent_desc_path)) {
+    parent_desc <- tryCatch(tb_read_json(parent_desc_path), error = function(e) list())
+
+    # Get existing views list
+    existing_views <- tb_as_list_of_rows(parent_desc$views %||% list())
+
+    # Check if this view_id already exists
+    existing_ids <- vapply(existing_views, function(v) {
+      as.character((v %||% list())$view_id %||% (v %||% list())$id %||% "")
+    }, character(1))
+
+    if (!(view_id %in% existing_ids)) {
+      # Add new view reference (path is relative: views/<view_id>)
+      # Include engine_id so tb_walk_views picks it up correctly
+      new_view_ref <- list(
+        view_id = view_id,
+        engine_id = engine_id,
+        path = file.path("views", view_id)
+      )
+      parent_desc$views <- c(existing_views, list(new_view_ref))
+
+      # Write updated parent descriptor
+      jsonlite::write_json(
+        tb_json_safe(parent_desc),
+        parent_desc_path,
+        auto_unbox = TRUE,
+        pretty = TRUE,
+        null = "null"
+      )
+
+      # Invalidate cache for parent node
+      cache_key <- paste0(parent_dir, "|", if (file.exists(parent_step_json)) "step" else "view")
+      .tb_cache$descriptors[[cache_key]] <- NULL
+    }
+  }
+
   tb_norm(view_dir)
 }
 

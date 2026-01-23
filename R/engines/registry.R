@@ -1406,6 +1406,18 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
             default = FALSE,
             help = "Show cluster membership color bar on left side of heatmap.",
             hidden = TRUE  # Controlled by cluster analysis panel
+          ),
+          msterp_schema_field(
+            "transpose", "bool", "Transpose (genes as columns)",
+            default = FALSE,
+            help = "Flip orientation so genes become columns and samples become rows.",
+            advanced = TRUE
+          ),
+          msterp_schema_field(
+            "show_dendrogram", "bool", "Show dendrogram",
+            default = TRUE,
+            help = "Show or hide the dendrogram visualization (clustering still applied).",
+            advanced = TRUE
           )
         )
       ),
@@ -1520,6 +1532,18 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
           default = FALSE,
           help = "Show cluster membership color bar on left side of heatmap.",
           hidden = TRUE  # Controlled by cluster analysis panel
+        ),
+        msterp_schema_field(
+          "transpose", "bool", "Transpose (genes as columns)",
+          default = FALSE,
+          help = "Flip orientation so genes become columns and samples become rows.",
+          advanced = TRUE
+        ),
+        msterp_schema_field(
+          "show_dendrogram", "bool", "Show dendrogram",
+          default = TRUE,
+          help = "Show or hide the dendrogram visualization (clustering still applied).",
+          advanced = TRUE
         )
       ),
       outputs = list(figures = c("heatmap"), tables = c("heatmap_data", "stats_table"), interactive = FALSE),
@@ -1704,7 +1728,14 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
           msterp_schema_field("show_go_id", "bool", "Show GO ID in labels", default = FALSE,
                               help = "Display GO ID beside term name (e.g., 'Term Name (GO:0000000)')",
                               advanced = TRUE),
-          msterp_schema_field("font_size", "int", "Font size", default = 14, min = 6, max = 30, advanced = TRUE)
+          msterp_schema_field("font_size", "int", "Font size", default = 14, min = 6, max = 30, advanced = TRUE),
+          msterp_schema_field(
+            "x_axis_metric", "choice", "X-axis metric",
+            default = "fold_enrichment",
+            choices = c("fold_enrichment", "neglog10_fdr"),
+            choice_labels = c("Fold Enrichment", "-log10(FDR)"),
+            advanced = TRUE
+          )
         ),
         mk_style(width = 12, height = 6, axis_text_size = 20)
       ),
