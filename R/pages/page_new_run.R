@@ -193,6 +193,7 @@ page_new_run_ui <- function() {
         .nr-log {
           white-space: pre-wrap;
           overflow-wrap: anywhere;
+          word-break: break-word;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
           font-size: 12.5px;
           line-height: 1.5;
@@ -204,7 +205,8 @@ page_new_run_ui <- function() {
           color: #e8e8e8;
           min-height: 240px;
           max-height: 520px;
-          overflow: auto;
+          overflow-x: hidden;
+          overflow-y: auto;
           display: flex;
           flex-direction: column;
           justify-content: flex-start;
@@ -329,6 +331,8 @@ page_new_run_ui <- function() {
         (function() {
           // Track scroll state per log element by a unique key
           var logScrollState = {};
+          // Flag to prevent MutationObserver from firing during programmatic updates
+          var isUpdating = false;
 
           function initNrLogAutoScroll() {
             var els = document.querySelectorAll('.nr-log');
@@ -348,10 +352,13 @@ page_new_run_ui <- function() {
               }
               function updatePaused() {
                 state.paused = !isAtBottom();
+                state.scrollTop = el.scrollTop;
               }
 
               el.addEventListener('scroll', function() {
-                updatePaused();
+                if (!isUpdating) {
+                  updatePaused();
+                }
               }, { passive: true });
 
               // Restore scroll position or scroll to bottom
@@ -362,27 +369,21 @@ page_new_run_ui <- function() {
               }
 
               var obs = new MutationObserver(function() {
+                // Skip if we're in the middle of a programmatic update
+                if (isUpdating) return;
                 if (!state.paused) {
                   el.scrollTop = el.scrollHeight;
                 }
-                // Save scroll position
                 state.scrollTop = el.scrollTop;
               });
 
               obs.observe(el, { childList: true, subtree: true, characterData: true });
-
-              // Also save scroll position periodically
-              setInterval(function() {
-                if (document.contains(el)) {
-                  state.scrollTop = el.scrollTop;
-                }
-              }, 200);
             });
           }
 
           document.addEventListener('DOMContentLoaded', initNrLogAutoScroll);
           document.addEventListener('shiny:connected', initNrLogAutoScroll);
-          // Check more frequently for new log elements
+          // Check for new log elements periodically
           setInterval(initNrLogAutoScroll, 300);
 
           // Custom handler to update log content without replacing element
@@ -396,8 +397,10 @@ page_new_run_ui <- function() {
             // Check if user has scrolled up (paused auto-scroll)
             var wasAtBottom = (logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight) < 20;
             var oldScrollTop = logEl.scrollTop;
+            var oldScrollLeft = logEl.scrollLeft;
 
-            // Update content
+            // Prevent MutationObserver from interfering during update
+            isUpdating = true;
             logEl.innerHTML = msg.html;
 
             // Restore scroll position or scroll to bottom
@@ -406,6 +409,9 @@ page_new_run_ui <- function() {
             } else {
               logEl.scrollTop = oldScrollTop;
             }
+            // Always preserve horizontal scroll position
+            logEl.scrollLeft = oldScrollLeft;
+            isUpdating = false;
           });
         })();
       "))
@@ -1860,8 +1866,11 @@ page_new_run_server <- function(input, output, session, app_state = NULL, state 
       for (name in names(terpbooks)) {
         src <- terpbooks[[name]]
         safe_name <- nr_sanitize(name)
-        dest <- file.path(temp_zip_dir, paste0(safe_name, ".terpbook"))
-        file.copy(src, dest, recursive = TRUE)
+        terpbook_file <- file.path(temp_zip_dir, paste0(safe_name, ".terpbook"))
+        # Create a proper .terpbook zip file (not a folder)
+        src_folder <- basename(src)
+        src_parent <- dirname(src)
+        res_safe_zip(zipfile = terpbook_file, files = src_folder, root = src_parent)
       }
 
       # Add queue summary CSV with run_root info for debugging
