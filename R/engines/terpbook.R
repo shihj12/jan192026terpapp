@@ -3879,6 +3879,10 @@ tb_render_hor_dis <- function(results, style, meta) {
     df$series_id <- df$group
   }
 
+  # Save original values BEFORE pooling for mean calculation
+  # Mean should be calculated on all values, not just the capped ones
+  original_values <- df$value
+
   # Pooling controls (viewer-time)
   pool_above <- isTRUE(style$pool_above %||% TRUE)
   pool_value <- tb_num(style$pool_value, 12)
@@ -3909,7 +3913,21 @@ tb_render_hor_dis <- function(results, style, meta) {
       p <- ggplot2::ggplot(df, ggplot2::aes(x = value, fill = group, group = series_id)) +
         ggplot2::geom_histogram(alpha = alpha_val, position = "identity", bins = 30, color = "black", linewidth = 0.3)
     }
-    p <- p + ggplot2::scale_y_continuous(labels = format_k_suffix, expand = ggplot2::expansion(mult = c(0, 0.12)))
+    # Use larger y-axis expansion when mean value labels are shown to prevent clipping
+    # Extra expansion needed for all_reps overlay mode with staggered labels
+    if (show_mean_value) {
+      n_series <- length(unique(df$series_id))
+      if (compare_mode == "all_reps" && layout_mode == "overlay" && n_series > 1) {
+        # Scale expansion based on number of staggered labels (0.10 per label + base 0.25)
+        y_top_expand <- min(0.25 + (n_series - 1) * 0.10, 0.90)  # Cap at 90%
+      } else {
+        y_top_expand <- 0.22
+      }
+      y_expand <- ggplot2::expansion(mult = c(0, y_top_expand))
+    } else {
+      y_expand <- ggplot2::expansion(mult = c(0, 0.12))
+    }
+    p <- p + ggplot2::scale_y_continuous(labels = format_k_suffix, expand = y_expand)
     y_label <- "Count"
   } else {
     # Density mode (default) - always filled with matching color outline
@@ -3922,7 +3940,21 @@ tb_render_hor_dis <- function(results, style, meta) {
       p <- ggplot2::ggplot(df, ggplot2::aes(x = value, fill = group, color = group, group = series_id)) +
         ggplot2::geom_density(alpha = alpha_val, linewidth = 0.8)
     }
-    p <- p + ggplot2::scale_y_continuous(labels = format_k_suffix, expand = ggplot2::expansion(mult = c(0, 0.12)))
+    # Use larger y-axis expansion when mean value labels are shown to prevent clipping
+    # Extra expansion needed for all_reps overlay mode with staggered labels
+    if (show_mean_value) {
+      n_series <- length(unique(df$series_id))
+      if (compare_mode == "all_reps" && layout_mode == "overlay" && n_series > 1) {
+        # Scale expansion based on number of staggered labels (0.10 per label + base 0.25)
+        y_top_expand <- min(0.25 + (n_series - 1) * 0.10, 0.90)  # Cap at 90%
+      } else {
+        y_top_expand <- 0.22
+      }
+      y_expand <- ggplot2::expansion(mult = c(0, y_top_expand))
+    } else {
+      y_expand <- ggplot2::expansion(mult = c(0, 0.12))
+    }
+    p <- p + ggplot2::scale_y_continuous(labels = format_k_suffix, expand = y_expand)
     y_label <- "Density"
   }
 
@@ -3939,7 +3971,8 @@ tb_render_hor_dis <- function(results, style, meta) {
     if (length(current_series) > 0) {
       if (mean_type == "harmonic") {
         series_means <- vapply(current_series, function(s) {
-          vals <- df$value[df$series_id == s]
+          # Use original_values (before pooling) for mean calculation
+          vals <- original_values[df$series_id == s]
           vals <- vals[is.finite(vals) & vals > 0]
           if (length(vals) == 0) return(NA_real_)
           length(vals) / sum(1 / vals)
@@ -3947,7 +3980,8 @@ tb_render_hor_dis <- function(results, style, meta) {
       } else {
         # Arithmetic mean per series
         series_means <- vapply(current_series, function(s) {
-          vals <- df$value[df$series_id == s]
+          # Use original_values (before pooling) for mean calculation
+          vals <- original_values[df$series_id == s]
           vals <- vals[is.finite(vals)]
           if (length(vals) == 0) return(NA_real_)
           mean(vals, na.rm = TRUE)
@@ -3971,8 +4005,9 @@ tb_render_hor_dis <- function(results, style, meta) {
       # For harmonic mean, recompute from raw data
       if (mean_type == "harmonic") {
         # Compute harmonic mean per group: n / sum(1/x) for positive values
+        # Use original_values (before pooling) for mean calculation
         harmonic_means <- vapply(current_groups, function(g) {
-          vals <- df$value[df$group == g]
+          vals <- original_values[df$group == g]
           vals <- vals[is.finite(vals) & vals > 0]
           if (length(vals) == 0) return(NA_real_)
           length(vals) / sum(1 / vals)
@@ -4080,7 +4115,16 @@ tb_render_hor_dis <- function(results, style, meta) {
             if (lvl_max_y > overall_max_y) overall_max_y <- lvl_max_y
           }
         }
-        mean_vals$label_y <- overall_max_y * 1.05
+        # Stagger labels vertically when multiple series to avoid overlap
+        n_labels <- nrow(mean_vals)
+        if (n_labels > 1 && compare_mode == "all_reps") {
+          # Sort by mean value and assign staggered y positions
+          mean_vals <- mean_vals[order(mean_vals$mean_val), ]
+          stagger_step <- overall_max_y * 0.08
+          mean_vals$label_y <- overall_max_y * 1.08 + (seq_len(n_labels) - 1) * stagger_step
+        } else {
+          mean_vals$label_y <- overall_max_y * 1.05
+        }
       }
     } else {
       # Density mode
@@ -4109,7 +4153,16 @@ tb_render_hor_dis <- function(results, style, meta) {
             if (lvl_max_y > overall_max_y) overall_max_y <- lvl_max_y
           }
         }
-        mean_vals$label_y <- overall_max_y * 1.05
+        # Stagger labels vertically when multiple series to avoid overlap
+        n_labels <- nrow(mean_vals)
+        if (n_labels > 1 && compare_mode == "all_reps") {
+          # Sort by mean value and assign staggered y positions
+          mean_vals <- mean_vals[order(mean_vals$mean_val), ]
+          stagger_step <- overall_max_y * 0.08
+          mean_vals$label_y <- overall_max_y * 1.08 + (seq_len(n_labels) - 1) * stagger_step
+        } else {
+          mean_vals$label_y <- overall_max_y * 1.05
+        }
       }
     }
 
