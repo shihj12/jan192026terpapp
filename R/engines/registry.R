@@ -1677,7 +1677,120 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
       ),
       render_spec = list(plots = c("volcano_plot"), tables = c("volcano_summary"), tabs = NULL)
     ),
-    
+
+    rankplot = list(
+      engine_id = "rankplot",
+      label = "Rank Plot",
+      category = "comparison",
+      description = "Scatter plot of values vs rank (lowest value = rank 1, ascending order).",
+      supports_sequential = FALSE,
+      accepted_input_levels = c("protein", "peptide", "metabolite"),
+      requirements = list(
+        min_groups = 1,
+        requires_terpbase = TRUE,
+        required_ids = c("protein"),
+        analysis_levels = c("protein", "peptide", "metabolite")
+      ),
+      params_schema = list(
+        msterp_schema_field(
+          "value_transform", "choice", "Value transform",
+          default = "none", choices = c("none", "log2", "log10"),
+          help = "Transform applied to values before ranking."
+        )
+      ),
+      style_schema = c(
+        list(
+          msterp_schema_field(
+            "y_axis_title", "string", "Y-axis title",
+            default = "Intensity",
+            help = "Label for the Y-axis (e.g., Intensity, Half-life)."
+          ),
+          msterp_schema_field(
+            "highlight_mode", "choice", "Highlight mode",
+            default = "none", choices = c("none", "threshold", "topn"),
+            choice_labels = c("None", "By threshold", "By top N"),
+            help = "How to highlight points: by value threshold or by rank."
+          ),
+          # Threshold mode fields (shown when highlight_mode == "threshold")
+          msterp_schema_field(
+            "threshold_highlight_above", "num", "Highlight above threshold",
+            default = NA,
+            help = "Highlight points with values above this threshold."
+          ),
+          msterp_schema_field(
+            "threshold_highlight_below", "num", "Highlight below threshold",
+            default = NA,
+            help = "Highlight points with values below this threshold."
+          ),
+          # Top-N mode fields (shown when highlight_mode == "topn")
+          msterp_schema_field(
+            "topn_top", "int", "Top N (lowest values)",
+            default = 0, min = 0, max = 5000,
+            help = "Number of lowest-ranked items (rank 1, 2, 3... = lowest values) to highlight."
+          ),
+          msterp_schema_field(
+            "topn_bottom", "int", "Bottom N (highest values)",
+            default = 0, min = 0, max = 5000,
+            help = "Number of highest-ranked items (highest values) to highlight."
+          ),
+          # Colors
+          msterp_schema_field(
+            "point_color", "string", "Point color",
+            default = "#B0B0B0", advanced = TRUE,
+            help = "Color for non-highlighted points."
+          ),
+          msterp_schema_field(
+            "highlight_color_top", "string", "Highlight color (top/above)",
+            default = "#FF4242", advanced = TRUE,
+            help = "Color for highlighted top/above-threshold points."
+          ),
+          msterp_schema_field(
+            "highlight_color_bottom", "string", "Highlight color (bottom/below)",
+            default = "#4245FF", advanced = TRUE,
+            help = "Color for highlighted bottom/below-threshold points."
+          ),
+          msterp_schema_field(
+            "point_size", "num", "Point size",
+            default = 2, min = 0.5, max = 10, advanced = TRUE
+          ),
+          msterp_schema_field(
+            "point_alpha", "num", "Point opacity",
+            default = 0.7, min = 0, max = 1, advanced = TRUE
+          ),
+          msterp_schema_field(
+            "label_font_size", "int", "Label font size",
+            default = 12, min = 6, max = 30, advanced = TRUE
+          )
+        ),
+        mk_style(width = 8, height = 6, axis_text_size = 20)
+      ),
+      viewer_schema = list(
+        msterp_schema_field(
+          "view_mode", "choice", "Viewer mode",
+          default = "export_preview", choices = c("export_preview", "interactive"),
+          choice_labels = c("Export preview", "Interactive")
+        ),
+        msterp_schema_field(
+          "selected_group", "choice", "Group",
+          default = "", choices = c(""),
+          help = "Select which group to display."
+        ),
+        msterp_schema_field(
+          "label_genes_map", "string", "Per-plot gene labels (JSON)",
+          default = "{}"
+        )
+      ),
+      outputs = list(
+        figures = c("rankplot"),
+        tables = character(0),
+        interactive = TRUE,
+        plotly_allowed = TRUE,
+        default_plot_mode = "ggplot",
+        click_target = "gene"
+      ),
+      render_spec = list(plots = c("rankplot"), tables = character(0), tabs = NULL)
+    ),
+
     # ----------------------------
     # Enrichment
     # ----------------------------

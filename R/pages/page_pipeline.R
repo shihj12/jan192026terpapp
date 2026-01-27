@@ -459,6 +459,24 @@ tf_render_fields <- function(step_id, kind, schema, values_list, prefix, schema_
       }
     }
 
+    # Rankplot: threshold fields shown when highlight_mode == "threshold"
+    if (grepl("^threshold_", nm)) {
+      ctrl <- find_controller_choice("highlight.*mode", "threshold")
+      if (!is.null(ctrl)) {
+        ctrl_id <- tf_field_id(step_id, prefix, ctrl$field)
+        ui <- conditionalPanel(sprintf("input['%s'] == '%s'", ctrl_id, ctrl$val), ui)
+      }
+    }
+
+    # Rankplot: topn fields shown when highlight_mode == "topn"
+    if (grepl("^topn_", nm)) {
+      ctrl <- find_controller_choice("highlight.*mode", "topn")
+      if (!is.null(ctrl)) {
+        ctrl_id <- tf_field_id(step_id, prefix, ctrl$field)
+        ui <- conditionalPanel(sprintf("input['%s'] == '%s'", ctrl_id, ctrl$val), ui)
+      }
+    }
+
     out[[length(out) + 1L]] <- ui
   }
   

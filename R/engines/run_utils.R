@@ -1561,7 +1561,7 @@ nr_build_step_payload <- function(ctx, step, registry = NULL) {
 #' @return Character vector of valid engine IDs
 nr_engine_ids <- function() {
   c("dataprocessor", "idquant", "spearman", "hor_dis", "vert_dis",
-    "pca", "volcano", "goora", "1dgofcs", "2dgofcs", "subloc", "heatmap", "ftest_heatmap",
+    "pca", "volcano", "rankplot", "goora", "1dgofcs", "2dgofcs", "subloc", "heatmap", "ftest_heatmap",
     "peptide_aggregate_to_protein",
     "idquant_id_quant", "idquant_average_value",
     "idquant_group", "idquant_replicate", "idquant_cv_scatter", "idquant_cv_bar",
@@ -1578,7 +1578,7 @@ nr_engine_ids <- function() {
 nr_implemented_engines <- function() {
   # All engines in this list have implementations in R/engines/stats/
   c("dataprocessor", "idquant", "spearman", "hor_dis", "vert_dis",
-    "pca", "volcano", "goora", "1dgofcs", "2dgofcs", "subloc", "heatmap", "ftest_heatmap",
+    "pca", "volcano", "rankplot", "goora", "1dgofcs", "2dgofcs", "subloc", "heatmap", "ftest_heatmap",
     "peptide_aggregate_to_protein",
     "idquant_id_quant", "idquant_average_value",
     "idquant_group", "idquant_replicate", "idquant_cv_scatter", "idquant_cv_bar",
@@ -1722,6 +1722,7 @@ nr_run_engine <- function(engine_id, payload, context = NULL) {
     "vert_dis"      = stats_vert_dis_run(payload, payload$params, context),
     "pca"           = stats_pca_run(payload, payload$params, context),
     "volcano"       = stats_volcano_run(payload, payload$params, context),
+    "rankplot"      = stats_rankplot_run(payload, payload$params, context),
     "goora"         = stats_goora_run(payload, payload$params, context),
     "1dgofcs"       = stats_1dgofcs_run(payload, payload$params, context),
     "2dgofcs"       = stats_2dgofcs_run(payload, payload$params, context),

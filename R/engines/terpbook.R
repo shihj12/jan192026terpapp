@@ -6144,6 +6144,374 @@ tb_render_peptide_aggregate_to_protein <- function(results, style, meta) {
   )
 }
 
+# ---- Rank Plot --------------------------------------------------------------
+
+#' Render rank plot (value vs rank scatter)
+#'
+#' @param results Engine results from stats_rankplot_run
+#' @param style Viewer-time style overrides
+#' @param meta Node metadata
+#' @return list(plots, tables, sets)
+tb_render_rankplot <- function(results, style, meta) {
+  tb_require_pkg("ggplot2")
+
+  # Extract data
+  df <- results$data$points
+  available_groups <- results$data$groups %||% character(0)
+
+  # Handle empty data
+
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    error_msg <- results$data$error %||% "No data available for rank plot"
+    p <- ggplot2::ggplot() +
+      ggplot2::annotate("text", x = 0.5, y = 0.5,
+                        label = error_msg, size = 5, color = "gray50") +
+      ggplot2::theme_void()
+    return(list(
+      plots = list(rankplot = p),
+      tables = list(rankplot_data = data.frame()),
+      sets = list()
+    ))
+  }
+
+  # Style settings
+  y_axis_title <- style$y_axis_title %||% "Intensity"
+  highlight_mode <- style$highlight_mode %||% "none"
+  point_color <- style$point_color %||% "#B0B0B0"
+  highlight_color_top <- style$highlight_color_top %||% "#FF4242"
+  highlight_color_bottom <- style$highlight_color_bottom %||% "#4245FF"
+  point_size <- tb_num(style$point_size, 2)
+  point_alpha <- tb_num(style$point_alpha, 0.7)
+  axis_text_size <- tb_num(style$axis_text_size, 20)
+  axis_style <- style$axis_style %||% "clean"
+
+  # Filter by selected group (viewer_schema)
+  selected_group <- style$selected_group %||% ""
+  if (nzchar(selected_group) && selected_group %in% df$group) {
+    df <- df[df$group == selected_group, , drop = FALSE]
+  } else if (length(available_groups) > 0) {
+    # Default to first group if none selected
+    df <- df[df$group == available_groups[1], , drop = FALSE]
+  }
+
+  # Initialize highlighting
+  df$highlight <- "none"
+  highlighted_top <- character(0)
+  highlighted_bottom <- character(0)
+
+  if (highlight_mode == "threshold") {
+    above <- suppressWarnings(as.numeric(style$threshold_highlight_above))
+    below <- suppressWarnings(as.numeric(style$threshold_highlight_below))
+
+    if (!is.na(above) && is.finite(above)) {
+      mask <- df$value > above
+      df$highlight[mask] <- "top"
+      highlighted_top <- df$protein_id[mask]
+    }
+    if (!is.na(below) && is.finite(below)) {
+      mask <- df$value < below
+      df$highlight[mask] <- "bottom"
+      highlighted_bottom <- df$protein_id[mask]
+    }
+  } else if (highlight_mode == "topn") {
+    top_n <- suppressWarnings(as.integer(style$topn_top %||% 0))
+    bottom_n <- suppressWarnings(as.integer(style$topn_bottom %||% 0))
+
+    if (!is.na(top_n) && top_n > 0) {
+      # Top N = lowest rank numbers (rank 1, 2, 3... = highest values)
+      mask <- df$rank <= top_n
+      df$highlight[mask] <- "top"
+      highlighted_top <- df$protein_id[mask]
+    }
+    if (!is.na(bottom_n) && bottom_n > 0) {
+      # Bottom N = highest rank numbers (lowest values)
+      max_rank <- max(df$rank, na.rm = TRUE)
+      mask <- df$rank > (max_rank - bottom_n)
+      df$highlight[mask] <- "bottom"
+      highlighted_bottom <- df$protein_id[mask]
+    }
+  }
+
+  # Build color mapping
+  color_map <- c(
+    "none" = point_color,
+    "top" = highlight_color_top,
+    "bottom" = highlight_color_bottom
+  )
+
+  # Order factor for consistent layering (highlighted points on top)
+  df$highlight <- factor(df$highlight, levels = c("none", "bottom", "top"))
+  df <- df[order(df$highlight), , drop = FALSE]
+
+  # Create the plot
+  # Use expand = c(0, 0) to ensure axes start at origin without padding
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = rank, y = value, color = highlight)) +
+    ggplot2::geom_point(size = point_size, alpha = point_alpha) +
+    ggplot2::scale_color_manual(values = color_map, guide = "none") +
+    ggplot2::scale_x_continuous(labels = format_k_suffix, expand = c(0, 0)) +
+    ggplot2::scale_y_continuous(expand = c(0, 0)) +
+    ggplot2::labs(x = "Rank", y = y_axis_title) +
+    tb_theme_base(axis_text_size, axis_style = axis_style)
+
+  # Add gene labels from label_genes_map (for export/preview mode)
+  # Use saved plotly positions for label placement (same pattern as volcano)
+  label_font_size <- tb_num(style$label_font_size, 12)
+  label_map_json <- style$label_genes_map %||% "{}"
+  label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+  label_genes <- label_map[["rankplot"]] %||% ""
+  label_genes <- trimws(unlist(strsplit(as.character(label_genes), "\n", fixed = TRUE)))
+  label_genes <- label_genes[nzchar(label_genes)]
+
+  # Compute plot limits for label positioning
+  xlim <- c(0, max(df$rank, na.rm = TRUE) * 1.05)
+  ylim <- range(df$value, na.rm = TRUE)
+  y_pad <- diff(ylim) * 0.05
+  ylim <- ylim + c(-y_pad, y_pad)
+
+  # Get saved plotly label positions (reflected in ggplot export)
+  plot_key <- "rankplot"
+  saved <- meta$plotly$labels_by_plot[[plot_key]] %||%
+    meta$plotly$labels_by_plot$default %||%
+    meta$plotly$labels %||% list()
+
+  if (length(label_genes) > 0) {
+    # Build gene column if not present
+    if (is.null(df$gene)) {
+      df$gene <- df$gene_id %||% df$protein_id %||% ""
+    }
+    df$gene <- as.character(df$gene)
+
+    df_labels <- df[df$gene %in% label_genes, , drop = FALSE]
+    if (nrow(df_labels) > 0) {
+      # Compute label positions from saved state (same pattern as volcano)
+      df_labels$lx <- NA_real_
+      df_labels$ly <- NA_real_
+
+      for (i in seq_len(nrow(df_labels))) {
+        id <- as.character(df_labels$gene[[i]])
+        s <- saved[[id]] %||% list()
+
+        pos <- .tb_label_xy_from_state(s, x_range = xlim, y_range = ylim)
+
+        lx <- pos$x
+        ly <- pos$y
+
+        if (!is.finite(lx)) lx <- df_labels$rank[[i]]
+        if (!is.finite(ly)) ly <- df_labels$value[[i]]
+
+        # Default offset if no saved position
+        if (is.null(s$x_range) && is.null(s$y_range)) {
+          if (is.null(s$x) || is.null(s$y) || !is.finite(suppressWarnings(as.numeric(s$x))) ||
+              !is.finite(suppressWarnings(as.numeric(s$y)))) {
+            x_offset <- 0.07 * diff(xlim)
+            y_offset <- 0.07 * diff(ylim)
+            lx <- df_labels$rank[[i]] + x_offset
+            ly <- df_labels$value[[i]] + y_offset
+          }
+        }
+
+        # Clamp to visible plot window
+        lx <- max(xlim[[1]], min(xlim[[2]], lx))
+        ly <- max(ylim[[1]], min(ylim[[2]], ly))
+
+        df_labels$lx[[i]] <- lx
+        df_labels$ly[[i]] <- ly
+      }
+
+      # Draw connector lines and labels (same pattern as volcano)
+      label_size <- label_font_size / 3  # Convert points to ggplot mm scale
+      p <- p +
+        ggplot2::geom_segment(
+          data = df_labels,
+          ggplot2::aes(x = rank, y = value, xend = lx, yend = ly),
+          linewidth = 0.3, color = "black",
+          inherit.aes = FALSE
+        ) +
+        ggplot2::geom_text(
+          data = df_labels,
+          ggplot2::aes(x = lx, y = ly, label = gene),
+          size = label_size, color = "black", hjust = 0.5, vjust = 0,
+          inherit.aes = FALSE
+        )
+    }
+  }
+
+  # Build frozen sets for GO-ORA integration
+  sets <- list()
+  if (length(highlighted_top) > 0) {
+    sets$highlighted_top <- unique(highlighted_top)
+  }
+  if (length(highlighted_bottom) > 0) {
+    sets$highlighted_bottom <- unique(highlighted_bottom)
+  }
+
+  list(
+    plots = list(rankplot = p),
+    tables = list(),
+    sets = sets
+  )
+}
+
+# ============================================================
+# Plotly-based interactive rank plot for label editing
+# - Hover: shows gene name, rank, value
+# - Click on point: triggers uniprot search (handled by Shiny)
+# - Drag annotations: repositions labels (captured via relayout events)
+# ============================================================
+tb_rankplot_plotly <- function(df, style, meta, xlim, ylim, labs, saved, y_axis_title = "Intensity") {
+  tb_require_pkg("plotly")
+
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(NULL)
+  }
+
+  # Normalize gene column
+  if (is.null(df$gene)) {
+    df$gene <- df$gene_id %||% df$protein_id %||% ""
+  }
+  df$gene <- as.character(df$gene)
+
+  # Colors from style
+  point_color <- style$point_color %||% "#B0B0B0"
+  highlight_color_top <- style$highlight_color_top %||% "#FF4242"
+  highlight_color_bottom <- style$highlight_color_bottom %||% "#4245FF"
+  point_size <- tb_num(style$point_size, 2)
+
+  # Map highlight to colors
+  color_map <- c(
+    "none" = point_color,
+    "top" = highlight_color_top,
+    "bottom" = highlight_color_bottom
+  )
+  df$color <- color_map[as.character(df$highlight)]
+  df$color[is.na(df$color)] <- point_color
+
+  # Build annotations with arrows for labels
+  annotations <- list()
+  label_size <- suppressWarnings(as.numeric(style$label_font_size %||% 12))
+  if (!is.finite(label_size) || label_size <= 0) label_size <- 12
+
+  if (length(labs) > 0) {
+    df_lab <- df[df$gene %in% labs, , drop = FALSE]
+
+    if (nrow(df_lab) > 0) {
+      for (i in seq_len(nrow(df_lab))) {
+        id <- as.character(df_lab$gene[[i]])
+        s <- saved[[id]] %||% list()
+
+        # Data point coordinates
+        data_x <- df_lab$rank[[i]]
+        data_y <- df_lab$value[[i]]
+
+        # Get saved position or compute default for label placement
+        lx <- suppressWarnings(as.numeric(s$x %||% NA_real_))
+        ly <- suppressWarnings(as.numeric(s$y %||% NA_real_))
+
+        # Apply range-normalized positions if available
+        if (!is.null(s$x_range) && !is.null(s$y_range)) {
+          pos <- .tb_label_xy_from_state(s, x_range = xlim, y_range = ylim)
+          lx <- pos$x
+          ly <- pos$y
+        }
+
+        if (!is.finite(lx)) lx <- data_x
+        if (!is.finite(ly)) ly <- data_y
+
+        # Default offset if no saved position - offset away from data point
+        if (is.null(s$x) || is.null(s$y) || !is.finite(suppressWarnings(as.numeric(s$x))) ||
+            !is.finite(suppressWarnings(as.numeric(s$y)))) {
+          if (is.null(s$x_range) && is.null(s$y_range)) {
+            # Use 7% of range for offset (similar to volcano)
+            x_offset <- 0.07 * diff(xlim)
+            y_offset <- 0.07 * diff(ylim)
+            lx <- data_x + x_offset
+            ly <- data_y + y_offset
+          }
+        }
+
+        # Clamp to visible plot window
+        lx <- max(xlim[[1]], min(xlim[[2]], lx))
+        ly <- max(ylim[[1]], min(ylim[[2]], ly))
+
+        # Label annotation with arrow pointing to data point
+        # x, y = arrowhead position (data point)
+        # ax, ay = text position (with axref/ayref = "x"/"y" for data coordinates)
+        # The arrow draws from text (ax, ay) to data point (x, y)
+        annotations <- c(annotations, list(list(
+          x = data_x,
+          y = data_y,
+          ax = lx,
+          ay = ly,
+          xref = "x",
+          yref = "y",
+          axref = "x",
+          ayref = "y",
+          text = id,
+          showarrow = TRUE,
+          arrowhead = 0,
+          arrowwidth = 1,
+          arrowcolor = "#333333",
+          font = list(size = label_size, color = "#000000"),
+          xanchor = "center",
+          yanchor = "bottom",
+          captureevents = TRUE,
+          name = id
+        )))
+      }
+    }
+  }
+
+  # Create plotly
+  p <- plotly::plot_ly(
+    data = df,
+    x = ~rank,
+    y = ~value,
+    type = "scatter",
+    mode = "markers",
+    marker = list(
+      color = ~color,
+      size = point_size * 2.5,
+      opacity = 0.9
+    ),
+    text = ~paste0(gene, "\nRank: ", rank, "\n", y_axis_title, ": ", round(value, 3)),
+    hoverinfo = "text",
+    source = "rankplot_plotly"
+  )
+
+  p <- p %>%
+    plotly::layout(
+      xaxis = list(
+        title = "Rank",
+        range = xlim,
+        zeroline = FALSE,
+        showgrid = TRUE,
+        gridcolor = "#e0e0e0"
+      ),
+      yaxis = list(
+        title = y_axis_title,
+        range = ylim,
+        zeroline = FALSE,
+        showgrid = TRUE,
+        gridcolor = "#e0e0e0"
+      ),
+      annotations = annotations,
+      showlegend = FALSE,
+      dragmode = "pan",
+      plot_bgcolor = "white",
+      paper_bgcolor = "white"
+    ) %>%
+    plotly::config(
+      edits = list(
+        annotationPosition = TRUE,
+        annotationTail = TRUE
+      ),
+      displayModeBar = FALSE,
+      modeBarButtonsToRemove = c("select2d", "lasso2d", "autoScale2d")
+    )
+
+  p
+}
+
 # ---- Heatmap ----------------------------------------------------------------
 
 # NOTE: We calculate extra space needed for custom gtable additions (group bars,
@@ -6965,6 +7333,7 @@ terpbook_render_node <- function(engine_id, results, effective_state, registry =
     "heatmap"  = tb_render_heatmap(results, style, meta),
     "ftest_heatmap" = tb_render_ftest_heatmap(results, style, meta),
     "volcano"  = tb_render_volcano(results, style, meta),
+    "rankplot" = tb_render_rankplot(results, style, meta),
     "goora"    = tb_render_goora(results, style, meta),
     "1dgofcs"  = tb_render_1dgofcs(results, style, meta),
     "2dgofcs"  = tb_render_2dgofcs(results, style, meta),

@@ -1174,6 +1174,24 @@ res_wrap_conditionals <- function(node_id, field, ui) {
   # Hor_dis/Vert_dis: selected_group visibility is handled server-side (compare_mode is a params field, not a style input)
   # The selected_group_ui is only built when compare_mode == "within_groups" - see style panel renderUI
 
+  # Rankplot: threshold fields only visible when highlight_mode == "threshold"
+  if (fname %in% c("threshold_highlight_above", "threshold_highlight_below")) {
+    ctrl <- res_field_input_id(node_id, "highlight_mode")
+    cond <- sprintf("input['%s'] == 'threshold'", ctrl)
+  }
+
+  # Rankplot: topn fields only visible when highlight_mode == "topn"
+  if (fname %in% c("topn_top", "topn_bottom")) {
+    ctrl <- res_field_input_id(node_id, "highlight_mode")
+    cond <- sprintf("input['%s'] == 'topn'", ctrl)
+  }
+
+  # Rankplot: highlight colors only visible when highlight_mode != "none"
+  if (fname %in% c("highlight_color_top", "highlight_color_bottom")) {
+    ctrl <- res_field_input_id(node_id, "highlight_mode")
+    cond <- sprintf("input['%s'] != 'none'", ctrl)
+  }
+
   if (!is.null(cond)) return(conditionalPanel(cond, ui))
   ui
 }
@@ -2373,6 +2391,7 @@ page_results_server <- function(input, output, session) {
 
   # These accumulate changes without triggering re-renders until committed
   pending_volcano_labels <- reactiveVal(NULL)      # Pending gene label text: list(plot_key, text)
+  pending_rankplot_labels <- reactiveVal(NULL)     # Pending rankplot gene label text: list(plot_key, text)
   pending_label_positions <- reactiveVal(list())   # Pending position changes: list(plot_key -> label_id -> {x, y, x_range, y_range})
   pending_term_labels <- reactiveVal(list())       # Pending term label edits: list(original_term -> new_value)
 
@@ -2550,6 +2569,12 @@ page_results_server <- function(input, output, session) {
   # Debounce the volcano label genes input (500ms delay)
   volcano_label_genes_debounced <- debounce(
     reactive({ input$res_volcano_label_genes }),
+    millis = 500
+  )
+
+  # Debounce the rankplot label genes input (500ms delay)
+  rankplot_label_genes_debounced <- debounce(
+    reactive({ input$res_rankplot_label_genes }),
     millis = 500
   )
 
@@ -3404,6 +3429,85 @@ page_results_server <- function(input, output, session) {
     )
   }
 
+  # ============================================================
+  # Rankplot helper functions for interactive mode
+  # ============================================================
+  res_rankplot_plot_state <- function(res, style, visibility, plot_key, plotly_state) {
+    df <- res$data$points
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(NULL)
+
+    # Ensure gene column exists
+    if (is.null(df$gene)) {
+      df$gene <- df$gene_id %||% df$protein_id %||% ""
+    }
+    df$gene <- as.character(df$gene)
+
+    # Filter by selected group
+    available_groups <- res$data$groups %||% character(0)
+    selected_group <- style$selected_group %||% ""
+    if (nzchar(selected_group) && selected_group %in% df$group) {
+      df <- df[df$group == selected_group, , drop = FALSE]
+    } else if (length(available_groups) > 0) {
+      df <- df[df$group == available_groups[1], , drop = FALSE]
+    }
+
+    if (nrow(df) == 0) return(NULL)
+
+    # Apply highlight logic (same as tb_render_rankplot)
+    highlight_mode <- style$highlight_mode %||% "none"
+    df$highlight <- "none"
+
+    if (highlight_mode == "threshold") {
+      above <- suppressWarnings(as.numeric(style$threshold_highlight_above))
+      below <- suppressWarnings(as.numeric(style$threshold_highlight_below))
+      if (!is.na(above) && is.finite(above)) df$highlight[df$value > above] <- "top"
+      if (!is.na(below) && is.finite(below)) df$highlight[df$value < below] <- "bottom"
+    } else if (highlight_mode == "topn") {
+      top_n <- suppressWarnings(as.integer(style$topn_top %||% 0))
+      bottom_n <- suppressWarnings(as.integer(style$topn_bottom %||% 0))
+      if (!is.na(top_n) && top_n > 0) df$highlight[df$rank <= top_n] <- "top"
+      if (!is.na(bottom_n) && bottom_n > 0) {
+        max_rank <- max(df$rank, na.rm = TRUE)
+        df$highlight[df$rank > (max_rank - bottom_n)] <- "bottom"
+      }
+    }
+
+    df$highlight <- factor(df$highlight, levels = c("none", "bottom", "top"))
+
+    # Compute axis limits
+    xlim <- c(0, max(df$rank, na.rm = TRUE) * 1.05)
+    ylim <- range(df$value, na.rm = TRUE)
+    y_pad <- diff(ylim) * 0.05
+    ylim <- ylim + c(-y_pad, y_pad)
+    if (!is.finite(ylim[1])) ylim[1] <- 0
+    if (!is.finite(ylim[2])) ylim[2] <- 1
+
+    # Get labels from label_genes_map
+    labs <- res_rankplot_label_list(style, plot_key)
+    labs <- intersect(labs, df$gene)
+
+    saved <- plotly_state$labels_by_plot[[plot_key]] %||%
+      plotly_state$labels_by_plot$default %||%
+      plotly_state$labels %||% list()
+
+    list(
+      df = df,
+      xlim = xlim,
+      ylim = ylim,
+      labs = labs,
+      saved = saved
+    )
+  }
+
+  res_rankplot_label_list <- function(style, plot_key) {
+    map_json <- style$label_genes_map %||% "{}"
+    map <- tryCatch(jsonlite::fromJSON(map_json, simplifyVector = FALSE), error = function(e) list())
+    genes <- map[[plot_key]] %||% ""
+    # Split by newlines (same as render function)
+    genes <- trimws(unlist(strsplit(as.character(genes), "\n", fixed = TRUE)))
+    unique(genes[nzchar(genes)])
+  }
+
   res_update_plotly_labels <- function(plot_key, update_fn, defer = FALSE) {
     plot_key <- as.character(plot_key %||% "")
     if (!nzchar(plot_key) || !is.function(update_fn)) return(invisible(NULL))
@@ -3497,15 +3601,17 @@ page_results_server <- function(input, output, session) {
 
   # Check if there are any pending changes for the current node
   res_has_pending_changes <- function() {
-    has_labels <- !is.null(pending_volcano_labels())
+    has_volcano_labels <- !is.null(pending_volcano_labels())
+    has_rankplot_labels <- !is.null(pending_rankplot_labels())
     has_positions <- length(pending_label_positions()) > 0
     has_term_edits <- length(pending_term_labels()) > 0
-    has_labels || has_positions || has_term_edits
+    has_volcano_labels || has_rankplot_labels || has_positions || has_term_edits
   }
 
   # Clear pending changes without committing (e.g., on data reload)
   res_discard_pending_changes <- function() {
     pending_volcano_labels(NULL)
+    pending_rankplot_labels(NULL)
     pending_label_positions(list())
     pending_term_labels(list())
   }
@@ -3540,6 +3646,30 @@ page_results_server <- function(input, output, session) {
       }
 
       pending_volcano_labels(NULL)
+      committed <- TRUE
+    }
+
+    # 1b. Commit pending rankplot labels (if any)
+    pending_rankplot <- isolate(pending_rankplot_labels())
+    if (!is.null(pending_rankplot)) {
+      plot_key <- pending_rankplot$plot_key
+      new_text <- pending_rankplot$text
+
+      eff <- isolate(active_effective_state())
+      label_map_json <- eff$style$label_genes_map %||% "{}"
+      label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+      label_map[[plot_key]] <- new_text
+      new_json <- jsonlite::toJSON(label_map, auto_unbox = TRUE)
+
+      cur_style <- rv$cache_style_by_node[[key]] %||% list()
+      cur_style$label_genes_map <- as.character(new_json)
+      rv$cache_style_by_node[[key]] <- cur_style
+
+      if (!is.null(nd)) {
+        .commit_style_debounced(node_dir = nd, payload = list(style = cur_style))
+      }
+
+      pending_rankplot_labels(NULL)
       committed <- TRUE
     }
 
@@ -4165,8 +4295,8 @@ page_results_server <- function(input, output, session) {
       }
     }
 
-    # Avoid rendering raw label_genes_map JSON since volcano has a custom UI control
-    if (identical(eng_lower, "volcano")) {
+    # Avoid rendering raw label_genes_map JSON since volcano and rankplot have custom UI controls
+    if (eng_lower %in% c("volcano", "rankplot")) {
       schema <- Filter(function(f) !identical(as.character(f$name %||% ""), "label_genes_map"), schema)
       if (length(schema) == 0) return(div("No style controls for this engine."))
     }
@@ -4180,7 +4310,7 @@ page_results_server <- function(input, output, session) {
     active_input_ids(input_ids)
 
     view_mode_field <- NULL
-    if (eng_lower %in% c("volcano", "2dgofcs")) {
+    if (eng_lower %in% c("volcano", "2dgofcs", "rankplot")) {
       view_mode_idx <- which(vapply(schema, function(f) identical(as.character(f$name %||% ""), "view_mode"), logical(1)))
       if (length(view_mode_idx) > 0) {
         view_mode_field <- schema[[view_mode_idx[[1]]]]
@@ -4223,7 +4353,7 @@ page_results_server <- function(input, output, session) {
       ontology_filter_ui <- res_field_ui(rv$active_node_id, ontology_filter_field, value_override = v_eff)
     }
 
-    # Extract group names from results for selected_group dropdown (hor_dis, vert_dis)
+    # Extract group names from results for selected_group dropdown (hor_dis, vert_dis, rankplot)
     group_choices <- NULL
     if (eng_lower %in% c("hor_dis", "vert_dis")) {
       res <- isolate(active_results())
@@ -4234,11 +4364,19 @@ page_results_server <- function(input, output, session) {
           group_choices <- group_choices[nzchar(group_choices)]
         }
       }
+    } else if (eng_lower == "rankplot") {
+      # Rankplot stores groups in res$data$groups
+      res <- isolate(active_results())
+      if (!is.null(res) && !is.null(res$data$groups)) {
+        group_choices <- unique(as.character(res$data$groups))
+        group_choices <- group_choices[nzchar(group_choices)]
+      }
     }
 
     # FIX: For hor_dis/vert_dis, extract selected_group field and render it at the TOP
     # This ensures the group selector is prominently visible when within_groups mode is active
     # IMPORTANT: Only show when compare_mode == "within_groups" (checked at build time since compare_mode is a params field)
+    # For rankplot: Always show group selector when multiple groups exist (each group gets one graph)
     selected_group_ui <- NULL
     if (eng_lower %in% c("hor_dis", "vert_dis")) {
       # Check if compare_mode is "within_groups" from results params
@@ -4260,6 +4398,20 @@ page_results_server <- function(input, output, session) {
           # FIX: Render the field directly without the conditional wrapper (we already checked compare_mode)
           selected_group_ui <- res_field_ui_core(rv$active_node_id, sg_field, value_override = v_eff, dynamic_choices = group_choices)
         }
+      }
+    } else if (eng_lower == "rankplot" && !is.null(group_choices) && length(group_choices) > 1) {
+      # Rankplot: Always show group selector when multiple groups exist
+      sg_idx <- which(vapply(schema, function(f) identical(as.character(f$name %||% ""), "selected_group"), logical(1)))
+      if (length(sg_idx) > 0) {
+        sg_field <- schema[[sg_idx[[1]]]]
+        schema <- schema[-sg_idx[[1]]]  # Remove from main schema so it's not rendered twice
+
+        v_eff <- eff$style[[sg_field$name]] %||% sg_field$default
+        # Use first group as default if not set
+        if (!nzchar(v_eff %||% "")) {
+          v_eff <- group_choices[[1]]
+        }
+        selected_group_ui <- res_field_ui_core(rv$active_node_id, sg_field, value_override = v_eff, dynamic_choices = group_choices)
       }
     }
 
@@ -4461,17 +4613,89 @@ page_results_server <- function(input, output, session) {
       }
     }
 
+    # Build rankplot GO-ORA panel (for sending highlighted genes to GO-ORA)
+    # Uses uiOutput for dynamic gene count updates as style changes
+    rankplot_goora_panel_ui <- NULL
+    if (eng_lower == "rankplot") {
+      # Check highlight_mode from effective style
+      highlight_mode <- eff$style$highlight_mode %||% "none"
+
+      # Only show GO-ORA panel when highlight_mode is not "none"
+      if (highlight_mode != "none") {
+        rankplot_goora_panel_ui <- div(
+          style = "margin-top: 16px; padding-top: 12px; border-top: 1px solid #dee2e6;",
+          tags$h6(
+            style = "font-weight: 600; margin-bottom: 10px; color: #495057;",
+            "GO-ORA Analysis"
+          ),
+          # Use uiOutput for reactive gene counts
+          uiOutput("res_rankplot_goora_counts"),
+          actionButton(
+            "res_run_rankplot_goora",
+            "Send Highlighted to GO-ORA",
+            class = "btn btn-primary btn-sm",
+            style = "margin-top: 8px; width: 100%;"
+          )
+        )
+      }
+      # When highlight_mode == "none", rankplot_goora_panel_ui stays NULL (no panel shown)
+    }
+
+    # Build rankplot gene label input (similar to volcano)
+    rankplot_label_input_ui <- NULL
+    if (eng_lower == "rankplot") {
+      # Use a single plot key for rankplot (per-group, but one main plot)
+      plot_key <- "rankplot"
+      label_map_json <- eff$style$label_genes_map %||% "{}"
+      label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+      current_labels <- label_map[[plot_key]] %||% ""
+
+      rankplot_label_input_ui <- div(
+        style = "margin-top: 16px; padding-top: 12px; border-top: 1px solid #dee2e6;",
+        tags$h6(
+          style = "font-weight: 600; margin-bottom: 10px; color: #495057;",
+          "Gene Labels"
+        ),
+        textAreaInput(
+          "res_rankplot_label_genes",
+          label = tagList(
+            "Genes to label",
+            uiOutput("res_rankplot_labels_pending_badge", inline = TRUE)
+          ),
+          value = as.character(current_labels),
+          rows = 4,
+          placeholder = "Enter gene symbols, one per line"
+        ),
+        div(
+          style = "margin-top: 6px; display: flex; gap: 8px; align-items: center;",
+          actionButton(
+            "res_rankplot_labels_apply",
+            "Apply Labels",
+            class = "btn-sm btn-outline-primary",
+            style = "flex-shrink: 0;"
+          ),
+          tags$small(
+            class = "text-muted",
+            style = "flex: 1;",
+            "Positions of existing labels are preserved"
+          )
+        )
+      )
+    }
+
     tagList(
       h4("Style"),
       view_mode_ui,
       ontology_filter_ui,  # Ontology selector at top for enrichment engines (1dgofcs, 2dgofcs, goora)
       axis_ui,
       mode_controls,
-      selected_group_ui,  # Group selector at top for hor_dis/vert_dis (conditional on within_groups mode)
+      selected_group_ui,  # Group selector at top for hor_dis/vert_dis/rankplot
       selectors_ui,       # Selector fields (always visible, not in accordions)
       accordions_ui,      # Accordion panels for grouped fields
       table_filter_ui,    # Table filters for GO engines
-      cluster_panel_ui    # Cluster analysis for heatmap engines
+      cluster_panel_ui,   # Cluster analysis for heatmap engines
+      rankplot_label_input_ui,  # Gene labels for rankplot
+      rankplot_goora_panel_ui   # GO-ORA for rankplot highlighted genes
       # Apply button and reset override removed - updates happen automatically
     )
   })
@@ -4495,7 +4719,8 @@ page_results_server <- function(input, output, session) {
     if (is.null(edef)) return(invisible(NULL))
 
     schema <- res_viewer_schema(edef)
-    if (identical(tolower(eng %||% ""), "volcano")) {
+    eng_lower <- tolower(eng %||% "")
+    if (eng_lower %in% c("volcano", "rankplot")) {
       schema <- Filter(function(f) !identical(as.character(f$name %||% ""), "label_genes_map"), schema)
     }
     if (length(schema) == 0) return(invisible(NULL))
@@ -4715,6 +4940,97 @@ page_results_server <- function(input, output, session) {
     )
   }, ignoreInit = TRUE)
 
+  # Sync rankplot per-plot gene labels to pending state (deferred update)
+  # User must click "Apply Labels" button to commit changes
+  observeEvent(rankplot_label_genes_debounced(), {
+    req(rv$loaded, rv$active_node_id)
+    eng <- tolower(active_engine_id() %||% "")
+    if (eng != "rankplot") return()
+
+    plot_key <- "rankplot"  # Single plot key for rankplot
+    new_labels <- rankplot_label_genes_debounced() %||% ""
+
+    # Get current committed labels to check if there's actually a change
+    eff <- isolate(active_effective_state())
+    label_map_json <- eff$style$label_genes_map %||% "{}"
+    label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+    current_committed <- label_map[[plot_key]] %||% ""
+
+    # Only mark as pending if different from committed value
+    if (!identical(new_labels, current_committed)) {
+      pending_rankplot_labels(list(
+        plot_key = plot_key,
+        text = new_labels
+      ))
+    } else {
+      # Clear pending if user reverted to committed value
+      pending_rankplot_labels(NULL)
+    }
+  }, ignoreInit = TRUE)
+
+  # Pending badge for rankplot labels
+  output$res_rankplot_labels_pending_badge <- renderUI({
+    pending <- pending_rankplot_labels()
+    if (is.null(pending)) return(NULL)
+
+    tags$span(
+      class = "badge bg-warning text-dark ms-1",
+      style = "font-size: 10px; vertical-align: middle;",
+      "pending"
+    )
+  })
+
+  # Apply rankplot labels button - commits pending changes
+  observeEvent(input$res_rankplot_labels_apply, {
+    req(rv$loaded, rv$active_node_id)
+    eng <- tolower(active_engine_id() %||% "")
+    if (eng != "rankplot") return()
+
+    pending <- pending_rankplot_labels()
+    if (is.null(pending)) {
+      showNotification("No pending label changes to apply.", type = "message")
+      return()
+    }
+
+    plot_key <- pending$plot_key
+    new_text <- pending$text
+
+    # Parse the new labels for count
+    new_labels <- strsplit(new_text, "\\s*[,\n]+\\s*")[[1]]
+    new_labels <- trimws(new_labels)
+    new_labels <- new_labels[nzchar(new_labels)]
+
+    # Commit the label text change
+    node_id <- rv$active_node_id
+    key <- as.character(node_id %||% "")
+
+    eff <- isolate(active_effective_state())
+    label_map_json <- eff$style$label_genes_map %||% "{}"
+    label_map <- tryCatch(jsonlite::fromJSON(label_map_json, simplifyVector = FALSE), error = function(e) list())
+    label_map[[plot_key]] <- new_text
+    new_json <- jsonlite::toJSON(label_map, auto_unbox = TRUE)
+
+    cur_style <- rv$cache_style_by_node[[key]] %||% list()
+    cur_style$label_genes_map <- as.character(new_json)
+    rv$cache_style_by_node[[key]] <- cur_style
+
+    nd <- active_node_dir()
+    if (!is.null(nd)) {
+      .commit_style_debounced(node_dir = nd, payload = list(style = cur_style))
+    }
+
+    # Clear pending state and trigger re-render
+    pending_rankplot_labels(NULL)
+    rv$has_unsaved_changes <- TRUE
+    rv$save_status <- "dirty"
+    style_rev(isolate(style_rev()) + 1L)
+
+    showNotification(
+      paste0("Applied ", length(new_labels), " label(s). Existing positions preserved."),
+      type = "message"
+    )
+  }, ignoreInit = TRUE)
+
   observeEvent(list(rv$active_node_id, input$res_plot_pick, input$res_enrichment_tabs), {
     res_clear_label_selected()
   }, ignoreInit = TRUE)
@@ -4752,11 +5068,13 @@ page_results_server <- function(input, output, session) {
 
   observeEvent(input$res_label_plot_click, {
     eng <- tolower(active_engine_id() %||% "")
-    if (!(eng %in% c("volcano", "2dgofcs"))) return()
+    if (!(eng %in% c("volcano", "2dgofcs", "rankplot"))) return()
 
     plot_names <- rv$current_plot_names %||% character()
     plot_key <- if (identical(eng, "volcano")) {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "volcano_plot")
+    } else if (identical(eng, "rankplot")) {
+      input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "rankplot")
     } else {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "2dgofcs_plot")
     }
@@ -4766,11 +5084,13 @@ page_results_server <- function(input, output, session) {
 
   observeEvent(input$res_label_plot_dblclick, {
     eng <- tolower(active_engine_id() %||% "")
-    if (!(eng %in% c("volcano", "2dgofcs"))) return()
+    if (!(eng %in% c("volcano", "2dgofcs", "rankplot"))) return()
 
     plot_names <- rv$current_plot_names %||% character()
     plot_key <- if (identical(eng, "volcano")) {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "volcano_plot")
+    } else if (identical(eng, "rankplot")) {
+      input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "rankplot")
     } else {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "2dgofcs_plot")
     }
@@ -4780,11 +5100,13 @@ page_results_server <- function(input, output, session) {
 
   observeEvent(input$res_plot_hover, {
     eng <- tolower(active_engine_id() %||% "")
-    if (!(eng %in% c("volcano", "2dgofcs"))) return()
+    if (!(eng %in% c("volcano", "2dgofcs", "rankplot"))) return()
 
     plot_names <- rv$current_plot_names %||% character()
     plot_key <- if (identical(eng, "volcano")) {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "volcano_plot")
+    } else if (identical(eng, "rankplot")) {
+      input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "rankplot")
     } else {
       input$res_plot_pick %||% (if (length(plot_names) > 0) plot_names[[1]] else "2dgofcs_plot")
     }
@@ -5134,8 +5456,8 @@ page_results_server <- function(input, output, session) {
       # Store plot names for right panel selector (volcano/2dgofcs)
       rv$current_plot_names <- plot_names
 
-      # For volcano/2dgofcs: selector moves to right panel; for others: show inline if multiple
-      engines_with_right_panel_selector <- c("volcano", "2dgofcs")
+      # For volcano/2dgofcs/rankplot: selector moves to right panel; for others: show inline if multiple
+      engines_with_right_panel_selector <- c("volcano", "2dgofcs", "rankplot")
       show_inline_pick <- length(plot_names) > 1 &&
                           !identical(eng, "pca") &&
                           !(tolower(eng %||% "") %in% engines_with_right_panel_selector)
@@ -5149,7 +5471,7 @@ page_results_server <- function(input, output, session) {
       ar <- w / h
       view_mode <- tolower(as.character(st$view_mode %||% "export_preview"))
       plot_box_class <- "res-plot-box"
-      if (tolower(eng %||% "") %in% c("volcano", "2dgofcs") && view_mode == "interactive") {
+      if (tolower(eng %||% "") %in% c("volcano", "2dgofcs", "rankplot") && view_mode == "interactive") {
         plot_box_class <- "res-plot-box res-plot-box-free"
       }
 
@@ -5353,7 +5675,7 @@ page_results_server <- function(input, output, session) {
           ar <- w / h
           view_mode <- tolower(as.character(st$view_mode %||% "export_preview"))
           plot_box_class <- "res-plot-box"
-          if (tolower(eng %||% "") %in% c("volcano", "2dgofcs") && view_mode == "interactive") {
+          if (tolower(eng %||% "") %in% c("volcano", "2dgofcs", "rankplot") && view_mode == "interactive") {
             plot_box_class <- "res-plot-box res-plot-box-free"
           }
 
@@ -5782,14 +6104,14 @@ page_results_server <- function(input, output, session) {
   width = function() {
     st <- active_effective_state()$style %||% list()
     eng <- tolower(active_engine_id() %||% "")
-    use_client <- eng %in% c("volcano", "2dgofcs") && isTRUE(res_is_interactive_view(st))
+    use_client <- eng %in% c("volcano", "2dgofcs", "rankplot") && isTRUE(res_is_interactive_view(st))
     dims <- res_plot_dim_px("res_plot", 150L, st, use_client = use_client)
     dims$w
   },
   height = function() {
     st <- active_effective_state()$style %||% list()
     eng <- tolower(active_engine_id() %||% "")
-    use_client <- eng %in% c("volcano", "2dgofcs") && isTRUE(res_is_interactive_view(st))
+    use_client <- eng %in% c("volcano", "2dgofcs", "rankplot") && isTRUE(res_is_interactive_view(st))
     dims <- res_plot_dim_px("res_plot", 150L, st, use_client = use_client)
     dims$h
   },
@@ -5820,14 +6142,14 @@ page_results_server <- function(input, output, session) {
   width = function() {
     st <- active_effective_state()$style %||% list()
     eng <- tolower(active_engine_id() %||% "")
-    use_client <- eng %in% c("volcano", "2dgofcs") && isTRUE(res_is_interactive_view(st))
+    use_client <- eng %in% c("volcano", "2dgofcs", "rankplot") && isTRUE(res_is_interactive_view(st))
     dims <- res_plot_dim_px("res_plot_hi", 300L, st, use_client = use_client)
     dims$w
   },
   height = function() {
     st <- active_effective_state()$style %||% list()
     eng <- tolower(active_engine_id() %||% "")
-    use_client <- eng %in% c("volcano", "2dgofcs") && isTRUE(res_is_interactive_view(st))
+    use_client <- eng %in% c("volcano", "2dgofcs", "rankplot") && isTRUE(res_is_interactive_view(st))
     dims <- res_plot_dim_px("res_plot_hi", 300L, st, use_client = use_client)
     dims$h
   },
@@ -5842,9 +6164,9 @@ page_results_server <- function(input, output, session) {
     hover_id <- NULL
 
     st <- active_effective_state()$style %||% list()
-    is_interactive <- eng %in% c("volcano", "2dgofcs") && isTRUE(res_is_interactive_view(st))
+    is_interactive <- eng %in% c("volcano", "2dgofcs", "rankplot") && isTRUE(res_is_interactive_view(st))
 
-    # Use plotly for interactive mode on volcano/2dgofcs
+    # Use plotly for interactive mode on volcano/2dgofcs/rankplot
     if (is_interactive) {
       return(
         div(
@@ -5858,7 +6180,7 @@ page_results_server <- function(input, output, session) {
     }
 
     # Non-interactive: standard ggplot rendering
-    if (eng %in% c("volcano", "2dgofcs")) {
+    if (eng %in% c("volcano", "2dgofcs", "rankplot")) {
       click_id <- "res_label_plot_click"
       dblclick_id <- "res_label_plot_dblclick"
     } else if (eng %in% c("goora", "1dgofcs")) {
@@ -5886,13 +6208,13 @@ page_results_server <- function(input, output, session) {
   })
 
   # ============================================================
-  # Plotly-based interactive plot for volcano and 2dgofcs
+  # Plotly-based interactive plot for volcano, 2dgofcs, and rankplot
   # - Draggable annotations for label positioning
-  # - Click events for uniprot search (volcano) or label toggle (2dgofcs)
+  # - Click events for uniprot search (volcano/rankplot) or label toggle (2dgofcs)
   # ============================================================
   output$res_plotly_interactive <- plotly::renderPlotly({
     eng <- tolower(active_engine_id() %||% "")
-    if (!(eng %in% c("volcano", "2dgofcs"))) return(NULL)
+    if (!(eng %in% c("volcano", "2dgofcs", "rankplot"))) return(NULL)
 
     st <- active_effective_state()
     style <- st$style %||% list()
@@ -5903,7 +6225,12 @@ page_results_server <- function(input, output, session) {
 
     visibility <- st$visibility %||% list()
     plotly_state <- st$plotly %||% list()
-    plot_key <- res_active_plot_name() %||% ""
+    # Use res_active_plot_name for volcano (multi-comparison), but fixed key for rankplot
+    plot_key <- if (identical(eng, "rankplot")) {
+      "rankplot"
+    } else {
+      res_active_plot_name() %||% ""
+    }
 
     if (identical(eng, "volcano")) {
       state <- res_volcano_plot_state(res, style, visibility, plot_key, plotly_state)
@@ -5973,6 +6300,25 @@ page_results_server <- function(input, output, session) {
       return(p)
     }
 
+    if (identical(eng, "rankplot")) {
+      state <- res_rankplot_plot_state(res, style, visibility, plot_key, plotly_state)
+      if (is.null(state)) return(NULL)
+
+      y_axis_title <- style$y_axis_title %||% "Intensity"
+
+      p <- tb_rankplot_plotly(
+        df = state$df,
+        style = style,
+        meta = list(visibility = visibility, plotly = plotly_state),
+        xlim = state$xlim,
+        ylim = state$ylim,
+        labs = state$labs,
+        saved = state$saved,
+        y_axis_title = y_axis_title
+      )
+      return(p)
+    }
+
     NULL
   })
 
@@ -6007,6 +6353,41 @@ page_results_server <- function(input, output, session) {
     gene_id <- df$gene[idx]
     if (!is.null(gene_id) && nzchar(gene_id)) {
       # Trigger uniprot search (same as before)
+      res_show_uniprot_summary(gene_id)
+    }
+  }, ignoreInit = TRUE)
+
+  # ============================================================
+  # Plotly click handler - rankplot: uniprot search
+  # ============================================================
+  observeEvent(event_data("plotly_click", source = "rankplot_plotly"), {
+    click <- event_data("plotly_click", source = "rankplot_plotly")
+    if (is.null(click)) return()
+
+    eng <- tolower(active_engine_id() %||% "")
+    if (!identical(eng, "rankplot")) return()
+
+    st <- active_effective_state()
+    style <- st$style %||% list()
+    if (!isTRUE(res_is_interactive_view(style))) return()
+
+    res <- active_results()
+    if (is.null(res)) return()
+
+    # Use consistent plot_key for rankplot
+    plot_key <- "rankplot"
+    visibility <- st$visibility %||% list()
+    plotly_state <- st$plotly %||% list()
+    state <- res_rankplot_plot_state(res, style, visibility, plot_key, plotly_state)
+    if (is.null(state)) return()
+
+    # Find clicked point by index
+    idx <- click$pointNumber + 1  # R is 1-indexed
+    df <- state$df
+    if (idx < 1 || idx > nrow(df)) return()
+
+    gene_id <- df$gene[idx]
+    if (!is.null(gene_id) && nzchar(gene_id)) {
       res_show_uniprot_summary(gene_id)
     }
   }, ignoreInit = TRUE)
@@ -6092,6 +6473,76 @@ page_results_server <- function(input, output, session) {
     }
 
     # Only trigger immediate re-render if NOT in deferred mode
+    if (updated && !is_interactive) {
+      rv$has_unsaved_changes <- TRUE
+      rv$save_status <- "dirty"
+      style_rev(isolate(style_rev()) + 1L)
+    }
+  }, ignoreInit = TRUE)
+
+  # ============================================================
+  # Plotly annotation relayout handler - rankplot label drag events
+  # ============================================================
+  observeEvent(event_data("plotly_relayout", source = "rankplot_plotly"), {
+    relayout_data <- event_data("plotly_relayout", source = "rankplot_plotly")
+    if (is.null(relayout_data)) return()
+
+    eng <- tolower(active_engine_id() %||% "")
+    if (!identical(eng, "rankplot")) return()
+
+    # Use consistent plot_key for rankplot (matches label input UI and render)
+    plot_key <- "rankplot"
+    st <- active_effective_state()
+    style <- st$style %||% list()
+    plotly_state <- st$plotly %||% list()
+
+    is_interactive <- isTRUE(res_is_interactive_view(style))
+
+    res <- active_results()
+    if (is.null(res)) return()
+    visibility <- st$visibility %||% list()
+    state <- res_rankplot_plot_state(res, style, visibility, plot_key, plotly_state)
+    if (is.null(state)) return()
+
+    labs <- state$labs
+    if (length(labs) == 0) return()
+
+    # Check for annotation position changes
+    # Annotations use showarrow=TRUE with axref/ayref="x"/"y", so text is at (ax, ay).
+    # When annotationTail=TRUE, dragging the text changes ax/ay (not x/y).
+    updated <- FALSE
+    for (key in names(relayout_data)) {
+      if (grepl("^annotations\\[\\d+\\]\\.(ax|ay)$", key)) {
+        matches <- regmatches(key, regexec("annotations\\[(\\d+)\\]\\.(ax|ay)", key))[[1]]
+        if (length(matches) == 3) {
+          idx <- as.integer(matches[2]) + 1
+          coord <- matches[3]
+          value <- relayout_data[[key]]
+
+          if (idx >= 1 && idx <= length(labs)) {
+            gene <- labs[idx]
+
+            res_update_plotly_labels(plot_key, function(cur_labels) {
+              if (is.null(cur_labels[[gene]])) cur_labels[[gene]] <- list()
+
+              if (coord == "ax") {
+                norm <- tb_normalize_coords(value, 0, state$xlim, state$ylim)
+                cur_labels[[gene]]$x <- norm$x[[1]]
+              } else if (coord == "ay") {
+                norm <- tb_normalize_coords(0, value, state$xlim, state$ylim)
+                cur_labels[[gene]]$y <- norm$y[[1]]
+              }
+
+              cur_labels[[gene]]$x_range <- state$xlim
+              cur_labels[[gene]]$y_range <- state$ylim
+              cur_labels
+            }, defer = is_interactive)
+            updated <- TRUE
+          }
+        }
+      }
+    }
+
     if (updated && !is_interactive) {
       rv$has_unsaved_changes <- TRUE
       rv$save_status <- "dirty"
@@ -6192,7 +6643,7 @@ page_results_server <- function(input, output, session) {
 
   output$res_hover_ui <- renderUI({
     eng <- tolower(active_engine_id() %||% "")
-    if (!(eng %in% c("volcano", "2dgofcs"))) return(NULL)
+    if (!(eng %in% c("volcano", "2dgofcs", "rankplot"))) return(NULL)
 
     st <- active_effective_state()$style %||% list()
     if (!isTRUE(res_is_interactive_view(st))) return(NULL)
@@ -7237,6 +7688,78 @@ page_results_server <- function(input, output, session) {
     )
   })
 
+  # Rankplot GO-ORA gene counts (reactive to style changes)
+  output$res_rankplot_goora_counts <- renderUI({
+    style_rev()  # React to style changes
+    eng <- active_engine_id()
+    if (!identical(tolower(eng %||% ""), "rankplot")) return(NULL)
+
+    res <- active_results()
+    if (is.null(res)) return(NULL)
+
+    eff <- active_effective_state()
+    highlight_mode <- eff$style$highlight_mode %||% "none"
+    if (highlight_mode == "none") return(NULL)
+
+    # Compute highlighted genes directly from data and style (same logic as tb_render_rankplot)
+    df <- res$data$points
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+      return(tags$div(class = "text-muted", style = "font-size: 12px;", "No data available."))
+    }
+
+    # Filter by selected group
+    available_groups <- res$data$groups %||% character(0)
+    selected_group <- eff$style$selected_group %||% ""
+    if (nzchar(selected_group) && selected_group %in% df$group) {
+      df <- df[df$group == selected_group, , drop = FALSE]
+    } else if (length(available_groups) > 0) {
+      df <- df[df$group == available_groups[1], , drop = FALSE]
+    }
+
+    if (nrow(df) == 0) {
+      return(tags$div(class = "text-muted", style = "font-size: 12px;", "No data for selected group."))
+    }
+
+    # Compute highlighted counts
+    n_top <- 0L
+    n_bottom <- 0L
+
+    if (highlight_mode == "threshold") {
+      above <- suppressWarnings(as.numeric(eff$style$threshold_highlight_above))
+      below <- suppressWarnings(as.numeric(eff$style$threshold_highlight_below))
+      if (!is.na(above) && is.finite(above)) {
+        n_top <- sum(df$value > above, na.rm = TRUE)
+      }
+      if (!is.na(below) && is.finite(below)) {
+        n_bottom <- sum(df$value < below, na.rm = TRUE)
+      }
+    } else if (highlight_mode == "topn") {
+      top_n <- suppressWarnings(as.integer(eff$style$topn_top %||% 0))
+      bottom_n <- suppressWarnings(as.integer(eff$style$topn_bottom %||% 0))
+      if (!is.na(top_n) && top_n > 0) {
+        n_top <- min(top_n, nrow(df))
+      }
+      if (!is.na(bottom_n) && bottom_n > 0) {
+        n_bottom <- min(bottom_n, nrow(df))
+      }
+    }
+
+    if (n_top == 0 && n_bottom == 0) {
+      return(tags$div(
+        class = "text-muted",
+        style = "font-size: 12px; margin-bottom: 8px;",
+        "Adjust threshold or top N settings to select genes for GO-ORA analysis."
+      ))
+    }
+
+    tags$div(
+      class = "text-muted mb-2",
+      style = "font-size: 12px;",
+      if (n_top > 0) tags$div(sprintf("Top/Above highlighted: %d genes", n_top)),
+      if (n_bottom > 0) tags$div(sprintf("Bottom/Below highlighted: %d genes", n_bottom))
+    )
+  })
+
   # Sync show_cluster_colors checkbox to style field
   observeEvent(input$res_show_cluster_colors, {
     eng <- active_engine_id()
@@ -7737,6 +8260,434 @@ page_results_server <- function(input, output, session) {
     }
 
     message(sprintf("[DEBUG] res_run_cluster_goora returning n_created: %d", n_created))
+    n_created
+  }
+
+  # Run GO-ORA on rankplot highlighted genes
+  observeEvent(input$res_run_rankplot_goora, {
+    message("[DEBUG] res_run_rankplot_goora button clicked!")
+    eng <- active_engine_id()
+    if (!identical(tolower(eng %||% ""), "rankplot")) {
+      showNotification("GO-ORA for highlighted genes is only available for Rank Plot results", type = "error")
+      return()
+    }
+
+    res <- active_results()
+    if (is.null(res)) {
+      showNotification("No rankplot results loaded", type = "error")
+      return()
+    }
+
+    # Compute highlighted genes directly from data and style (same logic as counts display)
+    # This ensures consistency with what the user sees in the GO-ORA panel
+    eff <- active_effective_state()
+    highlight_mode <- eff$style$highlight_mode %||% "none"
+
+    df <- res$data$points
+    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+      showNotification("No data available for GO-ORA analysis", type = "error")
+      return()
+    }
+
+    # Filter by selected group (same as counts display)
+    available_groups <- res$data$groups %||% character(0)
+    selected_group <- eff$style$selected_group %||% ""
+    # Track the actual group name used (for labeling GO-ORA results)
+    actual_group_name <- ""
+    if (nzchar(selected_group) && selected_group %in% df$group) {
+      df <- df[df$group == selected_group, , drop = FALSE]
+      actual_group_name <- selected_group
+    } else if (length(available_groups) > 0) {
+      df <- df[df$group == available_groups[1], , drop = FALSE]
+      actual_group_name <- available_groups[1]
+    }
+
+    if (nrow(df) == 0) {
+      showNotification("No data for selected group", type = "error")
+      return()
+    }
+
+    # Compute highlighted genes based on highlight_mode
+    highlighted_top <- character(0)
+    highlighted_bottom <- character(0)
+
+    if (highlight_mode == "threshold") {
+      above <- suppressWarnings(as.numeric(eff$style$threshold_highlight_above))
+      below <- suppressWarnings(as.numeric(eff$style$threshold_highlight_below))
+      if (!is.na(above) && is.finite(above)) {
+        highlighted_top <- df$protein_id[df$value > above]
+        highlighted_top <- highlighted_top[!is.na(highlighted_top)]
+      }
+      if (!is.na(below) && is.finite(below)) {
+        highlighted_bottom <- df$protein_id[df$value < below]
+        highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
+      }
+    } else if (highlight_mode == "topn") {
+      top_n <- suppressWarnings(as.integer(eff$style$topn_top %||% 0))
+      bottom_n <- suppressWarnings(as.integer(eff$style$topn_bottom %||% 0))
+      if (!is.na(top_n) && top_n > 0) {
+        highlighted_top <- df$protein_id[df$rank <= top_n]
+        highlighted_top <- highlighted_top[!is.na(highlighted_top)]
+      }
+      if (!is.na(bottom_n) && bottom_n > 0) {
+        max_rank <- max(df$rank, na.rm = TRUE)
+        highlighted_bottom <- df$protein_id[df$rank > (max_rank - bottom_n)]
+        highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
+      }
+    }
+
+    if (length(highlighted_top) == 0 && length(highlighted_bottom) == 0) {
+      showNotification("No highlighted genes. Enable threshold or top-N highlighting first.", type = "warning")
+      return()
+    }
+
+    node <- active_node_row()
+    if (is.null(node)) {
+      showNotification("No active node", type = "error")
+      return()
+    }
+
+    # Check if terpbase is available
+    terpbase <- rv$terpbase
+    has_go_data <- !is.null(terpbase) && (
+      !is.null(terpbase$protein_to_go) ||
+      (!is.null(terpbase$annot_long) && "gene" %in% names(terpbase$annot_long) && "ID" %in% names(terpbase$annot_long))
+    )
+
+    # Store pending state for modal
+    rv$pending_rankplot_goora <- list(
+      highlighted_top = highlighted_top,
+      highlighted_bottom = highlighted_bottom,
+      res = res,
+      node = node,
+      eng = eng,
+      group_name = actual_group_name
+    )
+
+    # Build terpbase status message
+    terpbase_status_msg <- if (has_go_data) {
+      tags$div(
+        style = "color: #28a745; margin-bottom: 12px; padding: 8px; background: #d4edda; border-radius: 4px;",
+        icon("check-circle"),
+        " TerpBase already loaded. You can change it below or keep the current one."
+      )
+    } else {
+      tags$div(
+        style = "color: #856404; margin-bottom: 12px; padding: 8px; background: #fff3cd; border-radius: 4px;",
+        icon("exclamation-triangle"),
+        " No TerpBase loaded. Please select one below."
+      )
+    }
+
+    # Show modal for GO-ORA parameters
+    showModal(modalDialog(
+      title = "Rank Plot GO-ORA Settings",
+      tags$div(
+        id = "rankplot_goora_modal_content",
+        tags$script(HTML("
+          setTimeout(function() {
+            Shiny.setInputValue('res_rankplot_terpbase_file', null);
+            var fileInput = document.getElementById('res_rankplot_terpbase_file');
+            if (fileInput) { fileInput.value = ''; }
+          }, 0);
+        ")),
+        terpbase_status_msg,
+        tags$hr(),
+        tags$div(
+          class = "mb-3",
+          tags$strong("Sets to analyze:"),
+          if (length(highlighted_top) > 0) tags$div(sprintf("Top/Above: %d genes", length(highlighted_top))),
+          if (length(highlighted_bottom) > 0) tags$div(sprintf("Bottom/Below: %d genes", length(highlighted_bottom)))
+        ),
+        tags$h5("GO-ORA Parameters"),
+        fluidRow(
+          column(4,
+            numericInput(
+              "res_rankplot_goora_fdr",
+              "FDR cutoff",
+              value = 0.05,
+              min = 0.001,
+              max = 1,
+              step = 0.01
+            )
+          ),
+          column(4,
+            numericInput(
+              "res_rankplot_goora_min_overlap",
+              "Min overlap",
+              value = 3,
+              min = 1,
+              max = 50,
+              step = 1
+            )
+          ),
+          column(4,
+            numericInput(
+              "res_rankplot_goora_min_term_size",
+              "Min term size",
+              value = 5,
+              min = 1,
+              max = 100,
+              step = 1
+            )
+          )
+        ),
+        tags$hr(),
+        tags$h5("TerpBase"),
+        tags$p(class = "text-muted", style = "font-size: 12px;",
+               "Select a TerpBase with GO annotations, or keep the currently loaded one."),
+        fluidRow(
+          column(12,
+            selectInput(
+              "res_rankplot_terpbase_default_path",
+              "Default TerpBase",
+              choices = tools_default_terpbase_choices(),
+              selected = "",
+              width = "100%"
+            )
+          )
+        ),
+        fluidRow(
+          column(12,
+            fileInput(
+              "res_rankplot_terpbase_file",
+              "Or upload TerpBase file",
+              accept = c(".rds", ".RDS"),
+              width = "100%"
+            )
+          )
+        )
+      ),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("res_rankplot_terpbase_load", "Run GO-ORA", class = "btn btn-primary")
+      ),
+      size = "m",
+      easyClose = FALSE
+    ))
+  }, ignoreInit = TRUE)
+
+  # Handle rankplot GO-ORA modal confirmation
+  observeEvent(input$res_rankplot_terpbase_load, {
+    message("[DEBUG] res_rankplot_terpbase_load button clicked!")
+
+    pending <- rv$pending_rankplot_goora
+    if (is.null(pending)) {
+      showNotification("No pending GO-ORA analysis", type = "error")
+      removeModal()
+      return()
+    }
+
+    # Determine terpbase source
+    terp <- NULL
+    f <- input$res_rankplot_terpbase_file
+    default_path <- input$res_rankplot_terpbase_default_path
+
+    if (!is.null(f) && !is.null(f$datapath) && nzchar(f$datapath)) {
+      tryCatch({
+        terp <- terpbase_load(f$datapath)
+        terp <- res_prepare_terpbase(terp)
+      }, error = function(e) {
+        showNotification(paste("Failed to load uploaded TerpBase:", e$message), type = "error")
+      })
+    } else if (!is.null(default_path) && nzchar(default_path) && file.exists(default_path)) {
+      tryCatch({
+        terp <- terpbase_load(default_path)
+        terp <- res_prepare_terpbase(terp)
+      }, error = function(e) {
+        showNotification(paste("Failed to load default TerpBase:", e$message), type = "error")
+      })
+    } else {
+      terp <- rv$terpbase
+    }
+
+    if (is.null(terp)) {
+      showNotification("Please load a TerpBase with GO annotations", type = "error")
+      return()
+    }
+
+    rv$terpbase <- terp
+    removeModal()
+
+    # Show progress
+    progress_id <- showNotification(
+      "Running GO-ORA on highlighted genes...",
+      type = "message",
+      duration = NULL,
+      closeButton = FALSE
+    )
+
+    # Run GO-ORA for each set
+    tryCatch({
+      n_created <- res_run_rankplot_goora(terp, pending)
+      rv$pending_rankplot_goora <- NULL
+      removeNotification(progress_id)
+
+      if (n_created > 0) {
+        rv$nodes_df <- tb_nodes_df(rv$run_root, rv$manifest)
+        showNotification(sprintf("Created %d GO-ORA analysis view(s)", n_created), type = "message", duration = 3)
+      } else {
+        showNotification("No GO-ORA views created (possibly no significant terms)", type = "warning")
+      }
+    }, error = function(e) {
+      removeNotification(progress_id)
+      showNotification(paste("GO-ORA failed:", e$message), type = "error")
+    })
+  }, ignoreInit = TRUE)
+
+  # Helper function to run rankplot GO-ORA analysis
+  res_run_rankplot_goora <- function(terp, pending) {
+    message("[DEBUG] res_run_rankplot_goora helper called")
+    highlighted_top <- pending$highlighted_top
+    highlighted_bottom <- pending$highlighted_bottom
+    node <- pending$node
+    eng <- pending$eng
+    group_name <- pending$group_name %||% ""
+
+    parent_dir <- tb_norm(node$node_dir[[1]])
+    message(sprintf("[DEBUG] parent_dir: %s, group_name: %s", parent_dir, group_name))
+
+    goora_params <- list(
+      fdr_cutoff = input$res_rankplot_goora_fdr %||% 0.05,
+      min_term_size = input$res_rankplot_goora_min_term_size %||% 5,
+      min_overlap = input$res_rankplot_goora_min_overlap %||% 3,
+      max_term_size = 500
+    )
+
+    goora_style <- list(
+      plot_type = "bar",
+      color_mode = "fdr",
+      fdr_palette = "yellow_cap",
+      flat_color = "#B0B0B0",
+      alpha = 0.8,
+      show_go_id = FALSE,
+      font_size = 14,
+      axis_style = "clean",
+      axis_text_size = 20,
+      width = 8,
+      height = 6,
+      ontology_filter = "BP",
+      flip_axis = FALSE
+    )
+
+    n_created <- 0
+
+    # Create GO-ORA for highlighted_top (if exists)
+    if (length(highlighted_top) > 0) {
+      goora_payload <- list(
+        ok = TRUE,
+        query_proteins = highlighted_top,
+        terpbase = terp
+      )
+
+      goora_results <- tryCatch({
+        stats_goora_run(goora_payload, goora_params)
+      }, error = function(e) {
+        warning(sprintf("Top/Above GO-ORA failed: %s", e$message))
+        NULL
+      })
+
+      if (!is.null(goora_results)) {
+        goora_results$rankplot_info <- list(
+          set_type = "highlighted_top",
+          n_genes = length(highlighted_top),
+          parent_engine = eng,
+          group_name = group_name
+        )
+
+        # Include group name in view_id and label for clarity
+        # Sanitize group_name for use in view_id (replace spaces/special chars with underscore)
+        group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
+        view_id <- if (nzchar(group_id)) paste0(group_id, "_top_goora") else "highlighted_top_goora"
+        label <- if (nzchar(group_name)) {
+          sprintf("%s Top GO-ORA (%d genes)", group_name, length(highlighted_top))
+        } else {
+          sprintf("Top/Above GO-ORA (%d genes)", length(highlighted_top))
+        }
+
+        view_dir <- tryCatch({
+          tb_create_child_view(
+            parent_dir = parent_dir,
+            view_id = view_id,
+            engine_id = "goora",
+            label = label,
+            params = goora_params,
+            style = goora_style
+          )
+        }, error = function(e) {
+          warning(sprintf("Failed to create view for highlighted_top: %s", e$message))
+          NULL
+        })
+
+        if (!is.null(view_dir)) {
+          tryCatch({
+            tb_save_child_results(view_dir, goora_results)
+            n_created <- n_created + 1
+          }, error = function(e) {
+            warning(sprintf("Failed to save results for highlighted_top: %s", e$message))
+          })
+        }
+      }
+    }
+
+    # Create GO-ORA for highlighted_bottom (if exists)
+    if (length(highlighted_bottom) > 0) {
+      goora_payload <- list(
+        ok = TRUE,
+        query_proteins = highlighted_bottom,
+        terpbase = terp
+      )
+
+      goora_results <- tryCatch({
+        stats_goora_run(goora_payload, goora_params)
+      }, error = function(e) {
+        warning(sprintf("Bottom/Below GO-ORA failed: %s", e$message))
+        NULL
+      })
+
+      if (!is.null(goora_results)) {
+        goora_results$rankplot_info <- list(
+          set_type = "highlighted_bottom",
+          n_genes = length(highlighted_bottom),
+          parent_engine = eng,
+          group_name = group_name
+        )
+
+        # Include group name in view_id and label for clarity
+        group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
+        view_id <- if (nzchar(group_id)) paste0(group_id, "_bottom_goora") else "highlighted_bottom_goora"
+        label <- if (nzchar(group_name)) {
+          sprintf("%s Bottom GO-ORA (%d genes)", group_name, length(highlighted_bottom))
+        } else {
+          sprintf("Bottom/Below GO-ORA (%d genes)", length(highlighted_bottom))
+        }
+
+        view_dir <- tryCatch({
+          tb_create_child_view(
+            parent_dir = parent_dir,
+            view_id = view_id,
+            engine_id = "goora",
+            label = label,
+            params = goora_params,
+            style = goora_style
+          )
+        }, error = function(e) {
+          warning(sprintf("Failed to create view for highlighted_bottom: %s", e$message))
+          NULL
+        })
+
+        if (!is.null(view_dir)) {
+          tryCatch({
+            tb_save_child_results(view_dir, goora_results)
+            n_created <- n_created + 1
+          }, error = function(e) {
+            warning(sprintf("Failed to save results for highlighted_bottom: %s", e$message))
+          })
+        }
+      }
+    }
+
+    message(sprintf("[DEBUG] res_run_rankplot_goora returning n_created: %d", n_created))
     n_created
   }
 
