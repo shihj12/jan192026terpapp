@@ -125,7 +125,7 @@ page_new_run_ui <- function() {
 
         /* Running panel: full width */
         .nr-running-panel {
-          flex: 1; max-width: 800px; width: 100%;
+          flex: 1 1 auto; min-width: 600px; max-width: 800px; width: 100%;
           background: var(--md-card-bg); border: 1px solid var(--md-card-border); border-radius: 12px;
           padding: 16px; overflow: auto; min-height: 0;
           box-shadow: var(--md-card-shadow);
