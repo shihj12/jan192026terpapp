@@ -6198,6 +6198,16 @@ tb_render_rankplot <- function(results, style, meta) {
     df <- df[df$group == available_groups[1], , drop = FALSE]
   }
 
+  # Filter by minimum replicates (style_schema)
+  min_reps <- tb_num(style$min_replicates, 1)
+  if (min_reps > 1 && "n_reps" %in% names(df)) {
+    df <- df[df$n_reps >= min_reps, , drop = FALSE]
+    # Re-compute ranks after filtering
+    if (nrow(df) > 0) {
+      df$rank <- rank(df$value, ties.method = "average", na.last = "keep")
+    }
+  }
+
   # Initialize highlighting
   df$highlight <- "none"
   highlighted_top <- character(0)

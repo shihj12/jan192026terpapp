@@ -2607,6 +2607,20 @@ nr_build_child_payload <- function(child_def, parent_engine, parent_sets,
       return(list(ok = FALSE, error = sprintf("No data for group '%s'", group)))
     }
 
+    # Filter by minimum replicates (from style)
+    min_reps <- suppressWarnings(as.integer(child_params$min_replicates %||% 1))
+    if (!is.na(min_reps) && min_reps > 1 && "n_reps" %in% names(points)) {
+      points <- points[points$n_reps >= min_reps, , drop = FALSE]
+      # Re-compute ranks after filtering
+      if (nrow(points) > 0) {
+        points$rank <- rank(points$value, ties.method = "average", na.last = "keep")
+      }
+    }
+
+    if (nrow(points) == 0) {
+      return(list(ok = FALSE, error = sprintf("No proteins meet min_replicates=%d in group '%s'", min_reps, group)))
+    }
+
     # Apply highlight logic to get query proteins
     query_proteins <- character()
 

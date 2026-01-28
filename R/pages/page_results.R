@@ -3468,6 +3468,18 @@ page_results_server <- function(input, output, session) {
 
     if (nrow(df) == 0) return(NULL)
 
+    # Filter by minimum replicates (style_schema)
+    min_reps <- suppressWarnings(as.integer(style$min_replicates %||% 1))
+    if (!is.na(min_reps) && min_reps > 1 && "n_reps" %in% names(df)) {
+      df <- df[df$n_reps >= min_reps, , drop = FALSE]
+      # Re-compute ranks after filtering
+      if (nrow(df) > 0) {
+        df$rank <- rank(df$value, ties.method = "average", na.last = "keep")
+      }
+    }
+
+    if (nrow(df) == 0) return(NULL)
+
     # Apply highlight logic (same as tb_render_rankplot)
     highlight_mode <- style$highlight_mode %||% "none"
     df$highlight <- "none"
@@ -7925,17 +7937,27 @@ page_results_server <- function(input, output, session) {
     message("[DEBUG] pending_cluster_goora stored with k =", k)
 
     # Build terpbase status message
+    # Check if default terpbase is available even if not loaded yet
+    default_terpbase_choices <- tools_default_terpbase_choices()
+    has_default_available <- length(default_terpbase_choices) > 0 && nzchar(default_terpbase_choices[1])
+
     terpbase_status_msg <- if (has_go_data) {
       tags$div(
         style = "color: #28a745; margin-bottom: 12px; padding: 8px; background: #d4edda; border-radius: 4px;",
         icon("check-circle"),
         " TerpBase already loaded. You can change it below or keep the current one."
       )
+    } else if (has_default_available) {
+      tags$div(
+        style = "color: #17a2b8; margin-bottom: 12px; padding: 8px; background: #d1ecf1; border-radius: 4px;",
+        icon("info-circle"),
+        " Default TerpBase available. Click 'Run GO-ORA' to load and run."
+      )
     } else {
       tags$div(
         style = "color: #856404; margin-bottom: 12px; padding: 8px; background: #fff3cd; border-radius: 4px;",
         icon("exclamation-triangle"),
-        " No TerpBase loaded. Please select one below."
+        " No TerpBase available. Please upload one below."
       )
     }
 
@@ -7991,13 +8013,17 @@ page_results_server <- function(input, output, session) {
         tags$hr(),
         tags$h5("Change TerpBase (optional)"),
         tags$p(class = "text-muted", style = "font-size: 0.9em;", "Leave empty to use the currently loaded TerpBase."),
-        selectInput(
-          "res_cluster_terpbase_default_path",
-          "Load from default library",
-          choices = tools_default_terpbase_choices(),
-          selected = "",
-          width = "100%"
-        ),
+        {
+          terpbase_choices <- tools_default_terpbase_choices()
+          default_selected <- if (length(terpbase_choices) > 0 && nzchar(terpbase_choices[1])) terpbase_choices[1] else ""
+          selectInput(
+            "res_cluster_terpbase_default_path",
+            "Load from default library",
+            choices = terpbase_choices,
+            selected = default_selected,
+            width = "100%"
+          )
+        },
         fileInput(
           "res_cluster_terpbase_file",
           "Or upload a file",
@@ -8387,17 +8413,27 @@ page_results_server <- function(input, output, session) {
     )
 
     # Build terpbase status message
+    # Check if default terpbase is available even if not loaded yet
+    default_terpbase_choices <- tools_default_terpbase_choices()
+    has_default_available <- length(default_terpbase_choices) > 0 && nzchar(default_terpbase_choices[1])
+
     terpbase_status_msg <- if (has_go_data) {
       tags$div(
         style = "color: #28a745; margin-bottom: 12px; padding: 8px; background: #d4edda; border-radius: 4px;",
         icon("check-circle"),
         " TerpBase already loaded. You can change it below or keep the current one."
       )
+    } else if (has_default_available) {
+      tags$div(
+        style = "color: #17a2b8; margin-bottom: 12px; padding: 8px; background: #d1ecf1; border-radius: 4px;",
+        icon("info-circle"),
+        " Default TerpBase available. Click 'Run GO-ORA' to load and run."
+      )
     } else {
       tags$div(
         style = "color: #856404; margin-bottom: 12px; padding: 8px; background: #fff3cd; border-radius: 4px;",
         icon("exclamation-triangle"),
-        " No TerpBase loaded. Please select one below."
+        " No TerpBase available. Please upload one below."
       )
     }
 
@@ -8474,13 +8510,17 @@ page_results_server <- function(input, output, session) {
                "Select a TerpBase with GO annotations, or keep the currently loaded one."),
         fluidRow(
           column(12,
-            selectInput(
-              "res_rankplot_terpbase_default_path",
-              "Default TerpBase",
-              choices = tools_default_terpbase_choices(),
-              selected = "",
-              width = "100%"
-            )
+{
+              terpbase_choices <- tools_default_terpbase_choices()
+              default_selected <- if (length(terpbase_choices) > 0 && nzchar(terpbase_choices[1])) terpbase_choices[1] else ""
+              selectInput(
+                "res_rankplot_terpbase_default_path",
+                "Default TerpBase",
+                choices = terpbase_choices,
+                selected = default_selected,
+                width = "100%"
+              )
+            }
           )
         ),
         fluidRow(

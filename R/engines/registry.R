@@ -1706,6 +1706,11 @@ msterp_engine_registry <- function(force_rebuild = FALSE) {
             help = "Label for the Y-axis (e.g., Intensity, Half-life)."
           ),
           msterp_schema_field(
+            "min_replicates", "int", "Min replicates",
+            default = 1, min = 1, max = 100,
+            help = "Minimum number of non-NA replicates required per protein. Proteins with fewer replicates are excluded from the plot and GO-ORA."
+          ),
+          msterp_schema_field(
             "highlight_mode", "choice", "Highlight mode",
             default = "none", choices = c("none", "threshold", "topn"),
             choice_labels = c("None", "By threshold", "By top N"),

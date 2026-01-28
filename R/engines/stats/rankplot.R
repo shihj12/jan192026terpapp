@@ -95,11 +95,18 @@ stats_rankplot_run <- function(payload, params = NULL, context = NULL) {
 
     if (length(cols_g) == 0) next
 
-    # Compute mean value per protein across replicates
+    # Compute mean value and replicate count per protein across replicates
+    submat <- mat[, cols_g, drop = FALSE]
     mean_vals <- if (length(cols_g) == 1) {
-      mat[, cols_g]
+      submat[, 1]
     } else {
-      rowMeans(mat[, cols_g, drop = FALSE], na.rm = TRUE)
+      rowMeans(submat, na.rm = TRUE)
+    }
+    # Count non-NA replicates per protein
+    n_reps <- if (length(cols_g) == 1) {
+      as.integer(!is.na(submat[, 1]))
+    } else {
+      rowSums(!is.na(submat))
     }
 
     results_list[[grp]] <- data.frame(
@@ -107,6 +114,7 @@ stats_rankplot_run <- function(payload, params = NULL, context = NULL) {
       gene_id = gene_ids,
       group = grp,
       value_raw = mean_vals,
+      n_reps = n_reps,
       stringsAsFactors = FALSE
     )
   }

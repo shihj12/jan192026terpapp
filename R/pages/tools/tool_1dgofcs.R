@@ -64,12 +64,16 @@ tools_1dgofcs_ui <- function() {
       left_ui = tagList(
         tags$h4("TerpBase"),
         uiOutput("tools_1dgofcs_terpbase_status"),
-        selectInput(
-          "tools_1dgofcs_terpbase_default_path",
-          "Default TerpBase",
-          choices = tools_default_terpbase_choices(),
-          selected = ""
-        ),
+{
+          terpbase_choices <- tools_default_terpbase_choices()
+          default_selected <- if (length(terpbase_choices) > 0 && nzchar(terpbase_choices[1])) terpbase_choices[1] else ""
+          selectInput(
+            "tools_1dgofcs_terpbase_default_path",
+            "Default TerpBase",
+            choices = terpbase_choices,
+            selected = default_selected
+          )
+        },
         actionButton(
           "tools_1dgofcs_terpbase_default_load",
           "Load default",

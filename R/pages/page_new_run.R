@@ -192,8 +192,8 @@ page_new_run_ui <- function() {
 
         .nr-log {
           white-space: pre-wrap;
-          overflow-wrap: anywhere;
-          word-break: break-word;
+          overflow-wrap: break-word;
+          word-break: normal;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
           font-size: 12.5px;
           line-height: 1.5;
@@ -205,11 +205,8 @@ page_new_run_ui <- function() {
           color: #e8e8e8;
           min-height: 240px;
           max-height: 520px;
-          overflow-x: hidden;
+          overflow-x: auto;
           overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          justify-content: flex-start;
         }
 
         .nr-actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -403,15 +400,17 @@ page_new_run_ui <- function() {
             isUpdating = true;
             logEl.innerHTML = msg.html;
 
-            // Restore scroll position or scroll to bottom
-            if (wasAtBottom) {
-              logEl.scrollTop = logEl.scrollHeight;
-            } else {
-              logEl.scrollTop = oldScrollTop;
-            }
-            // Always preserve horizontal scroll position
-            logEl.scrollLeft = oldScrollLeft;
-            isUpdating = false;
+            // Defer scroll restoration to after browser layout
+            requestAnimationFrame(function() {
+              if (wasAtBottom) {
+                logEl.scrollTop = logEl.scrollHeight;
+              } else {
+                logEl.scrollTop = oldScrollTop;
+              }
+              // Always preserve horizontal scroll position
+              logEl.scrollLeft = oldScrollLeft;
+              isUpdating = false;
+            });
           });
         })();
       "))
