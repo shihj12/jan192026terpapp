@@ -1880,6 +1880,17 @@ page_results_ui <- function() {
           width: 100% !important;
           height: 100% !important;
         }
+        /* Allow plotly content to be visible - parent res-plot-box clips by default */
+        .res-plot-box:has(.res-plotly-wrap) {
+          overflow: visible;
+        }
+        /* Disable plotly's internal SVG clipping that cuts off edge points */
+        .res-plotly-wrap .plotly .plot-container .svg-container svg .cartesianlayer .plot .scatterlayer {
+          clip-path: none !important;
+        }
+        .res-plotly-wrap .plotly .plot-container .svg-container svg g.plot {
+          clip-path: none !important;
+        }
 
         .res-root .control-label,
         .res-root label,
@@ -3442,6 +3453,10 @@ page_results_server <- function(input, output, session) {
     }
     df$gene <- as.character(df$gene)
 
+    # Compute global axis limits across ALL groups BEFORE filtering
+    global_max_rank <- max(df$rank, na.rm = TRUE)
+    global_max_value <- max(df$value, na.rm = TRUE)
+
     # Filter by selected group
     available_groups <- res$data$groups %||% character(0)
     selected_group <- style$selected_group %||% ""
@@ -3474,13 +3489,10 @@ page_results_server <- function(input, output, session) {
 
     df$highlight <- factor(df$highlight, levels = c("none", "bottom", "top"))
 
-    # Compute axis limits
-    xlim <- c(0, max(df$rank, na.rm = TRUE) * 1.05)
-    ylim <- range(df$value, na.rm = TRUE)
-    y_pad <- diff(ylim) * 0.05
-    ylim <- ylim + c(-y_pad, y_pad)
-    if (!is.finite(ylim[1])) ylim[1] <- 0
-    if (!is.finite(ylim[2])) ylim[2] <- 1
+    # Compute axis limits using GLOBAL max values (consistent across all groups)
+    xlim <- c(0, global_max_rank * 1.05)
+    y_pad <- global_max_value * 0.05
+    ylim <- c(0, global_max_value + y_pad)
 
     # Get labels from label_genes_map
     labs <- res_rankplot_label_list(style, plot_key)
@@ -8283,61 +8295,71 @@ page_results_server <- function(input, output, session) {
     eff <- active_effective_state()
     highlight_mode <- eff$style$highlight_mode %||% "none"
 
-    df <- res$data$points
-    if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    df_all <- res$data$points
+    if (is.null(df_all) || !is.data.frame(df_all) || nrow(df_all) == 0) {
       showNotification("No data available for GO-ORA analysis", type = "error")
       return()
     }
 
-    # Filter by selected group (same as counts display)
+    # Get all available groups - we'll run GO-ORA for ALL groups
     available_groups <- res$data$groups %||% character(0)
-    selected_group <- eff$style$selected_group %||% ""
-    # Track the actual group name used (for labeling GO-ORA results)
-    actual_group_name <- ""
-    if (nzchar(selected_group) && selected_group %in% df$group) {
-      df <- df[df$group == selected_group, , drop = FALSE]
-      actual_group_name <- selected_group
-    } else if (length(available_groups) > 0) {
-      df <- df[df$group == available_groups[1], , drop = FALSE]
-      actual_group_name <- available_groups[1]
+    if (length(available_groups) == 0) {
+      available_groups <- unique(df_all$group)
+    }
+    if (length(available_groups) == 0) {
+      available_groups <- "All"
     }
 
-    if (nrow(df) == 0) {
-      showNotification("No data for selected group", type = "error")
-      return()
+    # Build highlighted gene lists for ALL groups
+    all_groups_data <- list()
+    total_top <- 0
+    total_bottom <- 0
+
+    for (grp in available_groups) {
+      df <- df_all[df_all$group == grp, , drop = FALSE]
+      if (nrow(df) == 0) next
+
+      highlighted_top <- character(0)
+      highlighted_bottom <- character(0)
+
+      if (highlight_mode == "threshold") {
+        above <- suppressWarnings(as.numeric(eff$style$threshold_highlight_above))
+        below <- suppressWarnings(as.numeric(eff$style$threshold_highlight_below))
+        if (!is.na(above) && is.finite(above)) {
+          highlighted_top <- df$protein_id[df$value > above]
+          highlighted_top <- highlighted_top[!is.na(highlighted_top)]
+        }
+        if (!is.na(below) && is.finite(below)) {
+          highlighted_bottom <- df$protein_id[df$value < below]
+          highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
+        }
+      } else if (highlight_mode == "topn") {
+        top_n <- suppressWarnings(as.integer(eff$style$topn_top %||% 0))
+        bottom_n <- suppressWarnings(as.integer(eff$style$topn_bottom %||% 0))
+        if (!is.na(top_n) && top_n > 0) {
+          highlighted_top <- df$protein_id[df$rank <= top_n]
+          highlighted_top <- highlighted_top[!is.na(highlighted_top)]
+        }
+        if (!is.na(bottom_n) && bottom_n > 0) {
+          max_rank <- max(df$rank, na.rm = TRUE)
+          highlighted_bottom <- df$protein_id[df$rank > (max_rank - bottom_n)]
+          highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
+        }
+      }
+
+      if (length(highlighted_top) > 0 || length(highlighted_bottom) > 0) {
+        all_groups_data[[grp]] <- list(
+          group_name = grp,
+          highlighted_top = highlighted_top,
+          highlighted_bottom = highlighted_bottom
+        )
+        total_top <- total_top + length(highlighted_top)
+        total_bottom <- total_bottom + length(highlighted_bottom)
+      }
     }
 
-    # Compute highlighted genes based on highlight_mode
-    highlighted_top <- character(0)
-    highlighted_bottom <- character(0)
-
-    if (highlight_mode == "threshold") {
-      above <- suppressWarnings(as.numeric(eff$style$threshold_highlight_above))
-      below <- suppressWarnings(as.numeric(eff$style$threshold_highlight_below))
-      if (!is.na(above) && is.finite(above)) {
-        highlighted_top <- df$protein_id[df$value > above]
-        highlighted_top <- highlighted_top[!is.na(highlighted_top)]
-      }
-      if (!is.na(below) && is.finite(below)) {
-        highlighted_bottom <- df$protein_id[df$value < below]
-        highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
-      }
-    } else if (highlight_mode == "topn") {
-      top_n <- suppressWarnings(as.integer(eff$style$topn_top %||% 0))
-      bottom_n <- suppressWarnings(as.integer(eff$style$topn_bottom %||% 0))
-      if (!is.na(top_n) && top_n > 0) {
-        highlighted_top <- df$protein_id[df$rank <= top_n]
-        highlighted_top <- highlighted_top[!is.na(highlighted_top)]
-      }
-      if (!is.na(bottom_n) && bottom_n > 0) {
-        max_rank <- max(df$rank, na.rm = TRUE)
-        highlighted_bottom <- df$protein_id[df$rank > (max_rank - bottom_n)]
-        highlighted_bottom <- highlighted_bottom[!is.na(highlighted_bottom)]
-      }
-    }
-
-    if (length(highlighted_top) == 0 && length(highlighted_bottom) == 0) {
-      showNotification("No highlighted genes. Enable threshold or top-N highlighting first.", type = "warning")
+    if (length(all_groups_data) == 0) {
+      showNotification("No highlighted genes in any group. Enable threshold or top-N highlighting first.", type = "warning")
       return()
     }
 
@@ -8354,14 +8376,14 @@ page_results_server <- function(input, output, session) {
       (!is.null(terpbase$annot_long) && "gene" %in% names(terpbase$annot_long) && "ID" %in% names(terpbase$annot_long))
     )
 
-    # Store pending state for modal
+    # Store pending state for modal (all groups data)
     rv$pending_rankplot_goora <- list(
-      highlighted_top = highlighted_top,
-      highlighted_bottom = highlighted_bottom,
+      all_groups_data = all_groups_data,
+      total_top = total_top,
+      total_bottom = total_bottom,
       res = res,
       node = node,
-      eng = eng,
-      group_name = actual_group_name
+      eng = eng
     )
 
     # Build terpbase status message
@@ -8395,9 +8417,23 @@ page_results_server <- function(input, output, session) {
         tags$hr(),
         tags$div(
           class = "mb-3",
-          tags$strong("Sets to analyze:"),
-          if (length(highlighted_top) > 0) tags$div(sprintf("Top/Above: %d genes", length(highlighted_top))),
-          if (length(highlighted_bottom) > 0) tags$div(sprintf("Bottom/Below: %d genes", length(highlighted_bottom)))
+          tags$strong(sprintf("Analyzing %d sample group(s):", length(all_groups_data))),
+          tags$ul(
+            style = "margin-top: 8px; margin-bottom: 0;",
+            lapply(names(all_groups_data), function(grp) {
+              grp_data <- all_groups_data[[grp]]
+              n_top <- length(grp_data$highlighted_top)
+              n_bottom <- length(grp_data$highlighted_bottom)
+              parts <- c()
+              if (n_top > 0) parts <- c(parts, sprintf("%d top", n_top))
+              if (n_bottom > 0) parts <- c(parts, sprintf("%d bottom", n_bottom))
+              tags$li(sprintf("%s: %s", grp, paste(parts, collapse = ", ")))
+            })
+          ),
+          if (total_top > 0 || total_bottom > 0) tags$div(
+            style = "margin-top: 8px; font-weight: bold;",
+            sprintf("Total: %d top, %d bottom genes", total_top, total_bottom)
+          )
         ),
         tags$h5("GO-ORA Parameters"),
         fluidRow(
@@ -8535,17 +8571,15 @@ page_results_server <- function(input, output, session) {
     })
   }, ignoreInit = TRUE)
 
-  # Helper function to run rankplot GO-ORA analysis
+  # Helper function to run rankplot GO-ORA analysis for ALL sample groups
   res_run_rankplot_goora <- function(terp, pending) {
     message("[DEBUG] res_run_rankplot_goora helper called")
-    highlighted_top <- pending$highlighted_top
-    highlighted_bottom <- pending$highlighted_bottom
+    all_groups_data <- pending$all_groups_data
     node <- pending$node
     eng <- pending$eng
-    group_name <- pending$group_name %||% ""
 
     parent_dir <- tb_norm(node$node_dir[[1]])
-    message(sprintf("[DEBUG] parent_dir: %s, group_name: %s", parent_dir, group_name))
+    message(sprintf("[DEBUG] parent_dir: %s, n_groups: %d", parent_dir, length(all_groups_data)))
 
     goora_params <- list(
       fdr_cutoff = input$res_rankplot_goora_fdr %||% 0.05,
@@ -8572,117 +8606,128 @@ page_results_server <- function(input, output, session) {
 
     n_created <- 0
 
-    # Create GO-ORA for highlighted_top (if exists)
-    if (length(highlighted_top) > 0) {
-      goora_payload <- list(
-        ok = TRUE,
-        query_proteins = highlighted_top,
-        terpbase = terp
-      )
+    # Iterate through ALL groups
+    for (grp_name in names(all_groups_data)) {
+      grp_data <- all_groups_data[[grp_name]]
+      highlighted_top <- grp_data$highlighted_top
+      highlighted_bottom <- grp_data$highlighted_bottom
+      group_name <- grp_data$group_name %||% grp_name
 
-      goora_results <- tryCatch({
-        stats_goora_run(goora_payload, goora_params)
-      }, error = function(e) {
-        warning(sprintf("Top/Above GO-ORA failed: %s", e$message))
-        NULL
-      })
+      message(sprintf("[DEBUG] Processing group: %s (top: %d, bottom: %d)",
+                      group_name, length(highlighted_top), length(highlighted_bottom)))
 
-      if (!is.null(goora_results)) {
-        goora_results$rankplot_info <- list(
-          set_type = "highlighted_top",
-          n_genes = length(highlighted_top),
-          parent_engine = eng,
-          group_name = group_name
+      # Create GO-ORA for highlighted_top (if exists)
+      if (length(highlighted_top) > 0) {
+        goora_payload <- list(
+          ok = TRUE,
+          query_proteins = highlighted_top,
+          terpbase = terp
         )
 
-        # Include group name in view_id and label for clarity
-        # Sanitize group_name for use in view_id (replace spaces/special chars with underscore)
-        group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
-        view_id <- if (nzchar(group_id)) paste0(group_id, "_top_goora") else "highlighted_top_goora"
-        label <- if (nzchar(group_name)) {
-          sprintf("%s Top GO-ORA (%d genes)", group_name, length(highlighted_top))
-        } else {
-          sprintf("Top/Above GO-ORA (%d genes)", length(highlighted_top))
-        }
-
-        view_dir <- tryCatch({
-          tb_create_child_view(
-            parent_dir = parent_dir,
-            view_id = view_id,
-            engine_id = "goora",
-            label = label,
-            params = goora_params,
-            style = goora_style
-          )
+        goora_results <- tryCatch({
+          stats_goora_run(goora_payload, goora_params)
         }, error = function(e) {
-          warning(sprintf("Failed to create view for highlighted_top: %s", e$message))
+          warning(sprintf("[%s] Top/Above GO-ORA failed: %s", group_name, e$message))
           NULL
         })
 
-        if (!is.null(view_dir)) {
-          tryCatch({
-            tb_save_child_results(view_dir, goora_results)
-            n_created <- n_created + 1
+        if (!is.null(goora_results)) {
+          goora_results$rankplot_info <- list(
+            set_type = "highlighted_top",
+            n_genes = length(highlighted_top),
+            parent_engine = eng,
+            group_name = group_name
+          )
+
+          # Include group name in view_id and label for clarity
+          # Sanitize group_name for use in view_id (replace spaces/special chars with underscore)
+          group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
+          view_id <- if (nzchar(group_id)) paste0(group_id, "_top_goora") else "highlighted_top_goora"
+          label <- if (nzchar(group_name)) {
+            sprintf("%s Top GO-ORA (%d genes)", group_name, length(highlighted_top))
+          } else {
+            sprintf("Top/Above GO-ORA (%d genes)", length(highlighted_top))
+          }
+
+          view_dir <- tryCatch({
+            tb_create_child_view(
+              parent_dir = parent_dir,
+              view_id = view_id,
+              engine_id = "goora",
+              label = label,
+              params = goora_params,
+              style = goora_style
+            )
           }, error = function(e) {
-            warning(sprintf("Failed to save results for highlighted_top: %s", e$message))
+            warning(sprintf("[%s] Failed to create view for highlighted_top: %s", group_name, e$message))
+            NULL
           })
+
+          if (!is.null(view_dir)) {
+            tryCatch({
+              tb_save_child_results(view_dir, goora_results)
+              n_created <- n_created + 1
+            }, error = function(e) {
+              warning(sprintf("[%s] Failed to save results for highlighted_top: %s", group_name, e$message))
+            })
+          }
         }
       }
-    }
 
-    # Create GO-ORA for highlighted_bottom (if exists)
-    if (length(highlighted_bottom) > 0) {
-      goora_payload <- list(
-        ok = TRUE,
-        query_proteins = highlighted_bottom,
-        terpbase = terp
-      )
-
-      goora_results <- tryCatch({
-        stats_goora_run(goora_payload, goora_params)
-      }, error = function(e) {
-        warning(sprintf("Bottom/Below GO-ORA failed: %s", e$message))
-        NULL
-      })
-
-      if (!is.null(goora_results)) {
-        goora_results$rankplot_info <- list(
-          set_type = "highlighted_bottom",
-          n_genes = length(highlighted_bottom),
-          parent_engine = eng,
-          group_name = group_name
+      # Create GO-ORA for highlighted_bottom (if exists)
+      if (length(highlighted_bottom) > 0) {
+        goora_payload <- list(
+          ok = TRUE,
+          query_proteins = highlighted_bottom,
+          terpbase = terp
         )
 
-        # Include group name in view_id and label for clarity
-        group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
-        view_id <- if (nzchar(group_id)) paste0(group_id, "_bottom_goora") else "highlighted_bottom_goora"
-        label <- if (nzchar(group_name)) {
-          sprintf("%s Bottom GO-ORA (%d genes)", group_name, length(highlighted_bottom))
-        } else {
-          sprintf("Bottom/Below GO-ORA (%d genes)", length(highlighted_bottom))
-        }
-
-        view_dir <- tryCatch({
-          tb_create_child_view(
-            parent_dir = parent_dir,
-            view_id = view_id,
-            engine_id = "goora",
-            label = label,
-            params = goora_params,
-            style = goora_style
-          )
+        goora_results <- tryCatch({
+          stats_goora_run(goora_payload, goora_params)
         }, error = function(e) {
-          warning(sprintf("Failed to create view for highlighted_bottom: %s", e$message))
+          warning(sprintf("[%s] Bottom/Below GO-ORA failed: %s", group_name, e$message))
           NULL
         })
 
-        if (!is.null(view_dir)) {
-          tryCatch({
-            tb_save_child_results(view_dir, goora_results)
-            n_created <- n_created + 1
+        if (!is.null(goora_results)) {
+          goora_results$rankplot_info <- list(
+            set_type = "highlighted_bottom",
+            n_genes = length(highlighted_bottom),
+            parent_engine = eng,
+            group_name = group_name
+          )
+
+          # Include group name in view_id and label for clarity
+          group_id <- gsub("[^A-Za-z0-9_]", "_", group_name)
+          view_id <- if (nzchar(group_id)) paste0(group_id, "_bottom_goora") else "highlighted_bottom_goora"
+          label <- if (nzchar(group_name)) {
+            sprintf("%s Bottom GO-ORA (%d genes)", group_name, length(highlighted_bottom))
+          } else {
+            sprintf("Bottom/Below GO-ORA (%d genes)", length(highlighted_bottom))
+          }
+
+          view_dir <- tryCatch({
+            tb_create_child_view(
+              parent_dir = parent_dir,
+              view_id = view_id,
+              engine_id = "goora",
+              label = label,
+              params = goora_params,
+              style = goora_style
+            )
           }, error = function(e) {
-            warning(sprintf("Failed to save results for highlighted_bottom: %s", e$message))
+            warning(sprintf("[%s] Failed to create view for highlighted_bottom: %s", group_name, e$message))
+            NULL
           })
+
+          if (!is.null(view_dir)) {
+            tryCatch({
+              tb_save_child_results(view_dir, goora_results)
+              n_created <- n_created + 1
+            }, error = function(e) {
+              warning(sprintf("[%s] Failed to save results for highlighted_bottom: %s", group_name, e$message))
+            })
+          }
         }
       }
     }

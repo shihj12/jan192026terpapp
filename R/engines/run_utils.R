@@ -832,11 +832,12 @@ nr_compile_run_plan <- function(terpflow, formatted, registry = NULL) {
     paired_cfg <- s$paired %||% list()
     paired_enabled <- isTRUE(paired_cfg$enabled)
 
-    if (paired_enabled && eid %in% c("volcano", "pca")) {
+    if (paired_enabled && eid %in% c("volcano", "pca", "rankplot")) {
       children <- list()
 
-      # Get parent compute params (thresholds that define child gene lists)
+      # Get parent compute params and style (thresholds that define child gene lists)
       parent_params <- s$params %||% list()
+      parent_style <- s$style %||% list()
 
       if (eid == "volcano") {
         # Volcano ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ GO-ORA children per pairwise comparison
@@ -1225,6 +1226,71 @@ nr_compile_run_plan <- function(terpflow, formatted, registry = NULL) {
             )
           }
 
+        }
+
+      } else if (eid == "rankplot") {
+        # Rankplot → GO-ORA children per sample group
+        # Creates top and bottom GO-ORA analyses for each group based on highlight thresholds
+
+        # Get GO-ORA params from paired config
+        goora_params <- paired_cfg$params %||% list()
+        goora_style <- paired_cfg$style %||% list()
+
+        # Get highlight settings from parent STYLE (frozen at compile time)
+        # Note: highlight settings are in style_schema, not params_schema
+        highlight_mode <- parent_style$highlight_mode %||% "topn"
+        topn_top <- as.integer(parent_style$topn_top %||% 50)
+        topn_bottom <- as.integer(parent_style$topn_bottom %||% 50)
+        threshold_above <- parent_style$threshold_highlight_above
+        threshold_below <- parent_style$threshold_highlight_below
+
+        # Get groups from formatted metadata
+        groups <- meta$groups$group_name %||% character()
+
+        if (length(groups) > 0) {
+          for (grp in groups) {
+            grp_safe <- gsub("[^A-Za-z0-9_]", "_", grp)
+
+            # Top highlighted (high values) GO-ORA child
+            child_id_top <- sprintf("%s_top_goora", grp_safe)
+            children[[child_id_top]] <- list(
+              view_id = child_id_top,
+              label = sprintf("%s Top (GO-ORA)", grp),
+              engine_id = "goora",
+              params = c(
+                goora_params,
+                list(
+                  direction = "top",
+                  group = grp,
+                  highlight_mode = highlight_mode,
+                  topn_top = topn_top,
+                  threshold_above = threshold_above,
+                  source = sprintf("rankplot:%s", step_entry$step_id)
+                )
+              ),
+              style = merge_style_defaults("goora", goora_style)
+            )
+
+            # Bottom highlighted (low values) GO-ORA child
+            child_id_bottom <- sprintf("%s_bottom_goora", grp_safe)
+            children[[child_id_bottom]] <- list(
+              view_id = child_id_bottom,
+              label = sprintf("%s Bottom (GO-ORA)", grp),
+              engine_id = "goora",
+              params = c(
+                goora_params,
+                list(
+                  direction = "bottom",
+                  group = grp,
+                  highlight_mode = highlight_mode,
+                  topn_bottom = topn_bottom,
+                  threshold_below = threshold_below,
+                  source = sprintf("rankplot:%s", step_entry$step_id)
+                )
+              ),
+              style = merge_style_defaults("goora", goora_style)
+            )
+          }
         }
       }
 
@@ -2150,6 +2216,8 @@ nr_execute_paired_children <- function(step, parent_results, ctx, run_root) {
   # Include both combined sets and per-comparison data for volcano children
   parent_sets <- parent_results$data$sets %||% list()
   parent_sets$comparisons <- parent_results$data$comparisons %||% NULL
+  # For rankplot, include points data for child GO-ORA to filter by group
+  parent_sets$points <- parent_results$data$points %||% NULL
   parent_loadings <- parent_results$data$loadings %||% NULL
 
   child_views <- list()
@@ -2516,6 +2584,72 @@ nr_build_child_payload <- function(child_def, parent_engine, parent_sets,
     # FIX: Add axis labels for PCA-paired 2D GOFCS: "PC1 Top N" / "PC2 Top N"
     payload$x_score_label <- sprintf("PC%d Top %d", pc_x, length(sx))
     payload$y_score_label <- sprintf("PC%d Top %d", pc_y, length(sy))
+  }
+
+  # Rankplot → GO-ORA: Use highlighted proteins from specified group
+  else if (parent_engine == "rankplot" && child_engine == "goora") {
+    direction <- child_params$direction %||% "top"
+    group <- child_params$group %||% ""
+    highlight_mode <- child_params$highlight_mode %||% "topn"
+
+    # parent_sets should contain the rankplot points data
+    points <- parent_sets$points
+    if (is.null(points) || !is.data.frame(points) || nrow(points) == 0) {
+      return(list(ok = FALSE, error = "Parent rankplot missing points data"))
+    }
+
+    # Filter to specified group
+    if (nzchar(group) && "group" %in% names(points)) {
+      points <- points[points$group == group, , drop = FALSE]
+    }
+
+    if (nrow(points) == 0) {
+      return(list(ok = FALSE, error = sprintf("No data for group '%s'", group)))
+    }
+
+    # Apply highlight logic to get query proteins
+    query_proteins <- character()
+
+    if (highlight_mode == "topn") {
+      if (direction == "top") {
+        topn <- as.integer(child_params$topn_top %||% 50)
+        # Top = highest values = lowest rank numbers
+        points <- points[order(points$rank), , drop = FALSE]
+        query_proteins <- head(points$protein_id, topn)
+      } else {
+        bottomn <- as.integer(child_params$topn_bottom %||% 50)
+        # Bottom = lowest values = highest rank numbers
+        points <- points[order(points$rank, decreasing = TRUE), , drop = FALSE]
+        query_proteins <- head(points$protein_id, bottomn)
+      }
+    } else if (highlight_mode == "threshold") {
+      if (direction == "top") {
+        threshold <- suppressWarnings(as.numeric(child_params$threshold_above))
+        if (!is.na(threshold) && is.finite(threshold)) {
+          query_proteins <- points$protein_id[points$value > threshold]
+        }
+      } else {
+        threshold <- suppressWarnings(as.numeric(child_params$threshold_below))
+        if (!is.na(threshold) && is.finite(threshold)) {
+          query_proteins <- points$protein_id[points$value < threshold]
+        }
+      }
+    }
+
+    if (length(query_proteins) == 0) {
+      return(list(
+        ok = FALSE,
+        error = sprintf("No highlighted proteins for %s direction in group '%s'", direction, group)
+      ))
+    }
+
+    # Map to gene symbols
+    query_proteins <- map_ids_to_gene_symbols(query_proteins)
+    query_proteins <- query_proteins[!is.na(query_proteins) & nzchar(query_proteins)]
+    query_proteins <- query_proteins[!duplicated(query_proteins)]
+
+    payload$query_proteins <- query_proteins
+    payload$n_query <- length(query_proteins)
   }
 
   # Unknown combination

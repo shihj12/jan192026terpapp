@@ -1084,9 +1084,10 @@ tf_step_card_ui <- function(step, idx, n_steps, registry, open_state = TRUE) {
     if (is.null(dp_state$n) || is.null(dp_state$substeps)) dp_state <- tf_dp_default_plan()
   }
   
-  is_pca     <- identical(step$engine_id, "pca")
-  is_volcano <- identical(step$engine_id, "volcano")
-  supports_paired <- (!is_dp) && (is_pca || is_volcano)
+  is_pca      <- identical(step$engine_id, "pca")
+  is_volcano  <- identical(step$engine_id, "volcano")
+  is_rankplot <- identical(step$engine_id, "rankplot")
+  supports_paired <- (!is_dp) && (is_pca || is_volcano || is_rankplot)
   
   paired_enable_id <- sprintf("%s__paired_enable", step_id)
   pca_loadings_id  <- sprintf("%s__p_loadings_corr", step_id)
@@ -1133,6 +1134,16 @@ tf_step_card_ui <- function(step, idx, n_steps, registry, open_state = TRUE) {
             )
           })),
           div(class = "tf-note", "Linked paired card(s) will appear below.")
+        )
+      } else if (is_rankplot) {
+        # Rankplot paired analysis UI - creates GO-ORA for each sample group
+        conditionalPanel(
+          condition = sprintf("input['%s'] == true", paired_enable_id),
+          tagList(
+            div(class = "tf-note",
+                "When enabled, GO-ORA will run on highlighted proteins (top/bottom) for each sample group. ",
+                "Highlight thresholds are set in the Params/Style section above.")
+          )
         )
       } else {
         # Volcano paired analysis UI - multi-config GO-ORA
@@ -2034,8 +2045,8 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
       }
       
       
-      if (eid %in% c("volcano", "pca")) {
-        
+      if (eid %in% c("volcano", "pca", "rankplot")) {
+
         enabled <- isTRUE(input[[sprintf("%s__paired_enable", sid)]])
         
         if (identical(eid, "pca")) {
@@ -2175,6 +2186,19 @@ page_pipeline_server <- function(input, output, session, app_state = NULL, state
             enabled = enabled,
             engine_id = legacy_engine_id,
             engines = engines_cfg
+          )
+        } else if (identical(eid, "rankplot")) {
+          # Rankplot paired analysis: GO-ORA on highlighted proteins per group
+          # Uses highlight thresholds from params (topn_top, topn_bottom, threshold_above, threshold_below)
+          st$paired <- list(
+            enabled = enabled,
+            engine_id = "goora",
+            params = list(
+              fdr_cutoff = 0.05,
+              min_term_size = 5,
+              max_terms = 20
+            ),
+            style = list()
           )
         }
       }

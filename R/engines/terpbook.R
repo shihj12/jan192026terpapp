@@ -6185,6 +6185,10 @@ tb_render_rankplot <- function(results, style, meta) {
   axis_text_size <- tb_num(style$axis_text_size, 20)
   axis_style <- style$axis_style %||% "clean"
 
+  # Compute global axis limits across ALL groups for consistency
+  global_max_rank <- max(df$rank, na.rm = TRUE)
+  global_max_value <- max(df$value, na.rm = TRUE)
+
   # Filter by selected group (viewer_schema)
   selected_group <- style$selected_group %||% ""
   if (nzchar(selected_group) && selected_group %in% df$group) {
@@ -6243,13 +6247,20 @@ tb_render_rankplot <- function(results, style, meta) {
   df$highlight <- factor(df$highlight, levels = c("none", "bottom", "top"))
   df <- df[order(df$highlight), , drop = FALSE]
 
-  # Create the plot
-  # Use expand = c(0, 0) to ensure axes start at origin without padding
+  # Compute plot limits using GLOBAL max values (consistent across all groups)
+  # 5% padding on right, y starts at 0
+  xlim <- c(0, global_max_rank * 1.05)
+  y_pad <- global_max_value * 0.05
+  ylim <- c(0, global_max_value + y_pad)
+
+  # Create the plot with explicit axis limits
+  # clip = "on" to prevent points spilling past axis boundaries
   p <- ggplot2::ggplot(df, ggplot2::aes(x = rank, y = value, color = highlight)) +
     ggplot2::geom_point(size = point_size, alpha = point_alpha) +
     ggplot2::scale_color_manual(values = color_map, guide = "none") +
     ggplot2::scale_x_continuous(labels = format_k_suffix, expand = c(0, 0)) +
     ggplot2::scale_y_continuous(expand = c(0, 0)) +
+    ggplot2::coord_cartesian(xlim = xlim, ylim = ylim, clip = "on") +
     ggplot2::labs(x = "Rank", y = y_axis_title) +
     tb_theme_base(axis_text_size, axis_style = axis_style)
 
@@ -6261,12 +6272,6 @@ tb_render_rankplot <- function(results, style, meta) {
   label_genes <- label_map[["rankplot"]] %||% ""
   label_genes <- trimws(unlist(strsplit(as.character(label_genes), "\n", fixed = TRUE)))
   label_genes <- label_genes[nzchar(label_genes)]
-
-  # Compute plot limits for label positioning
-  xlim <- c(0, max(df$rank, na.rm = TRUE) * 1.05)
-  ylim <- range(df$value, na.rm = TRUE)
-  y_pad <- diff(ylim) * 0.05
-  ylim <- ylim + c(-y_pad, y_pad)
 
   # Get saved plotly label positions (reflected in ggplot export)
   plot_key <- "rankplot"
@@ -6485,20 +6490,23 @@ tb_rankplot_plotly <- function(df, style, meta, xlim, ylim, labs, saved, y_axis_
         range = xlim,
         zeroline = FALSE,
         showgrid = TRUE,
-        gridcolor = "#e0e0e0"
+        gridcolor = "#e0e0e0",
+        automargin = TRUE
       ),
       yaxis = list(
         title = y_axis_title,
         range = ylim,
         zeroline = FALSE,
         showgrid = TRUE,
-        gridcolor = "#e0e0e0"
+        gridcolor = "#e0e0e0",
+        automargin = TRUE
       ),
       annotations = annotations,
       showlegend = FALSE,
       dragmode = "pan",
       plot_bgcolor = "white",
-      paper_bgcolor = "white"
+      paper_bgcolor = "white",
+      margin = list(l = 60, r = 40, t = 20, b = 50)
     ) %>%
     plotly::config(
       edits = list(
